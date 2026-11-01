@@ -20,6 +20,8 @@ loadstring(readfile("GeodeHub/loader.lua"))()
 
 ## Features
 
+- **Auto Endless Mode:** hovers in circles over three mound bands, advances past depleted sections, manages native-paced pickup, cash upgrades and camp cycles, and targets boss weak points with normal hits between openings. It resumes mining at the next depth. Camp visits and manual cracking temporarily own movement and camera. Requires an owned GEO-MAG 3000 and waits outside Endless mode. It does not cash out, escape or replay.
+- **Endless Hover Clearance:** defaults to 6.5 studs (twice the older needle character clearance of 3.25), adjustable from 2 to 20 studs. Both this setting and Auto Endless save to config and teleport continuation.
 - **Auto Geode Pickup:** selects valid nearby mound targets, uses the equipped owned tool, respects its calculated cooldown and a configurable range up to 26 studs. Pet feedback is excluded from tool confirmation counts.
 - **Auto Crack and Sell:** starts a fixed 10-second window after the first bag-count change. Later pickups do not restart it. It suspends collection, deposits, enters a free station, uses Crack All, leaves, sells, and returns to the original pickup position. A fresh bag change starts the next window.
 - **Auto Upgrade GEO-MAG 3000:** buys only Pull Power and Pulse Speed with run cash, checks affordability and replicated levels, and waits during camp cycles.
@@ -31,7 +33,7 @@ loadstring(readfile("GeodeHub/loader.lua"))()
 
 Crack All uses an existing pass or stored credits. The hub does not buy passes, credits, candy packs or Robux products. Closing the menu keeps enabled features running; Unload stops them and disables its teleport continuation.
 
-**Full Auto Farm Wins is not implemented yet.** Boss combat and replay still require integration/testing. Auto Escape was confirmed live: one exit move produced the server's `Escaped=true` flag. Escape polling and max-upgrade crack/sell shutdown run independently of menu status updates. The current pickup maximum is 26 studs, even though the magnet's native client can calculate a longer reach.
+**Standard Auto Farm Wins is not implemented yet.** Standard win replay still requires integration/testing. Auto Endless was tested live at 6.5-stud clearance: it completed one hover lap, sent 37 boss hit requests (8 targeting weak points), advanced from depth 45 to 46, and resumed Mining. Stopping restored character rotation. Sustained unattended operation and camp handoff during this mode still need longer live verification. Auto Escape was separately confirmed with the server's `Escaped=true` flag and is disabled in Endless mode. Escape polling, Endless movement and max-upgrade crack/sell shutdown run independently of menu status updates. The current pickup maximum is 26 studs, even though the magnet's native client can calculate a longer reach.
 
 ## Loader and cache recovery
 
@@ -51,6 +53,7 @@ This fixes a confirmed issue where an HTTP request returned success with an empt
 | `Geode/auto_crack_sell_diagnostics.json` | Camp-cycle diagnostics |
 | `Geode/haunted_egg_diagnostics.json` | Egg requests/results |
 | `Geode/magnet_upgrade_diagnostics.json` | Upgrade confirmations |
+| `Geode/auto_endless_diagnostics.json` | Endless phase, hover/lap and boss-hit diagnostics |
 
 Loading a saved config can enable its saved automation toggles.
 
