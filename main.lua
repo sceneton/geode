@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.6.0"
+local geodeVersion="1.6.1"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1187,6 +1187,68 @@ local function createEndlessController(options)
     return api
 end
 
+-- Fits horizontal contours to all active column stacks. No Roblox dependencies.
+local function createPileRingPlanner()
+    local planner={}
+    function planner.Build(columns,center,options)
+        options=options or {}
+        local fractions=options.Fractions or{.12,.34,.56,.78,.94}
+        local sectors=options.Sectors or 16
+        local low,top=math.huge,-math.huge;local active={}
+        for _,c in ipairs(columns)do
+            if c.Count>0 and c.Top>=c.Base then
+                active[#active+1]=c;low=math.min(low,c.Base);top=math.max(top,c.Top)
+            end
+        end
+        if #active==0 then return nil end
+        local bands={};local height=math.max(1,top-low)
+        for index,fraction in ipairs(fractions)do
+            local y=low+height*fraction;local bins={};local radii={}
+            for s=1,sectors do bins[s]={}end
+            for _,c in ipairs(active)do
+                if c.Base<=y+1.5 and c.Top>=y-1.5 then
+                    local dx,dz=c.X-center.X,c.Z-center.Z
+                    local radius=math.sqrt(dx*dx+dz*dz)
+                    local angle=math.atan2(dz,dx)%(math.pi*2)
+                    local sector=math.floor(angle/(math.pi*2)*sectors+.5)%sectors+1
+                    table.insert(bins[sector],radius);table.insert(radii,radius)
+                end
+            end
+            if #radii==0 then continue end
+            table.sort(radii)
+            local overall=radii[math.max(1,math.ceil(#radii*.97))]+1.25
+            local profile={}
+            for s=1,sectors do
+                local bin=bins[s];table.sort(bin)
+                if #bin>0 then profile[s]=bin[math.max(1,math.ceil(#bin*.97))]+1.25 end
+            end
+            for s=1,sectors do if not profile[s]then
+                -- Empty sectors retain the measured contour, never pull the axis
+                -- toward a surviving cluster on one side of the mound.
+                for offset=1,math.floor(sectors/2)do
+                    local left=(s-1-offset)%sectors+1;local right=(s-1+offset)%sectors+1
+                    if #bins[left]>0 or #bins[right]>0 then profile[s]=math.max(profile[left]or 0,profile[right]or 0);break end
+                end
+                profile[s]=profile[s]or overall
+            end end
+            local smooth={}
+            for s=1,sectors do smooth[s]=math.clamp((profile[(s-2)%sectors+1]+profile[s]*2+profile[s%sectors+1])/4,3,60)end
+            bands[#bands+1]={Name=({"Base","Lower slope","Middle","Upper slope","Crown"})[index]or("Ring "..index),
+                Y=y,Radius=math.clamp(overall,3,60),Radii=smooth,Columns=#radii}
+        end
+        return {Origin={X=center.X,Y=low,Z=center.Z},Bands=bands,Columns=#active,Top=top,Bottom=low,Sectors=sectors}
+    end
+    function planner.RadiusAt(band,angle)
+        local radii=band.Radii
+        if not radii or #radii==0 then return band.Radius end
+        local position=(angle%(math.pi*2))/(math.pi*2)*#radii
+        local index=math.floor(position)
+        local alpha=position-index
+        return radii[index%#radii+1]*(1-alpha)+radii[(index+1)%#radii+1]*alpha
+    end
+    return planner
+end
+
 local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
@@ -1195,12 +1257,15 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local C=P.PlayerScripts.MTGClient
     local S=require(C.State)
     local Render=require(C.MoundRender)
+    local Grid=require(MTG.Modules.Mound)
+    local Game=require(MTG.Config.Game)
+    local ringPlanner=createPileRingPlanner()
     local Tools=require(C.Tools)
     local HUD=require(C.RunHUD)
     local Bench=require(C.Bench)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate
     local collision={};local savedCamera;local previous
-    local plan,planDepth;local nextPlan=0;local angle=0;local band=1
+    local plan,planDepth,profileCenter;local nextPlan=0;local angle=0;local band=1
     local nextHit=0;local nextEquip=0;local progressItems=0;local progressAt=0
     local events={};local api
     local function record(kind,data)
@@ -1223,31 +1288,19 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     end
     local function buildPlan()
         local origin=Render.origin()
-        local folder=Render.Folder
-        if not origin or not folder then return nil end
-        local parts=folder:GetChildren();local stride=math.max(1,math.ceil(#parts/1024))
-        local samples={};local top=origin.Y
-        for i=1,#parts,stride do
-            local p=parts[i]
-            if p:IsA("BasePart")and p.Transparency<1 and p.CanQuery then
-                local col,id=Render.target(p)
-                if col~=nil and id~=nil then
-                    samples[#samples+1]=p.Position
-                    top=math.max(top,p.Position.Y+p.Size.Y/2)
-                end
-            end
+        if not origin then return nil end
+        if not profileCenter then
+            local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
+            profileCenter=body and{X=body.Position.X,Z=body.Position.Z}or{X=origin.X,Z=origin.Z}
         end
-        if #samples==0 then return nil end
-        local height=math.max(1,top-origin.Y);local bands={}
-        for _,fraction in ipairs({.2,.55,.85})do
-            local y=origin.Y+height*fraction;local radii={}
-            for _,p in ipairs(samples)do if math.abs(p.Y-y)<=math.max(3,height*.22)then
-                radii[#radii+1]=Vector2.new(p.X-origin.X,p.Z-origin.Z).Magnitude
-            end end
-            table.sort(radii)
-            bands[#bands+1]={Y=y,Radius=math.clamp(radii[math.max(1,math.ceil(#radii*.85))]or 12,3,38)}
+        local columns={}
+        for col=1,Grid.N do
+            local count=Render.height(col)
+            if count>0 then columns[#columns+1]={X=origin.X+Grid.X[col],Z=origin.Z+Grid.Z[col],Base=origin.Y+Grid.Base[col],
+                Top=origin.Y+Grid.topY(col,count),Count=count}end
         end
-        return {Origin=origin,Bands=bands}
+        local fitted=ringPlanner.Build(columns,profileCenter)
+        if fitted and #fitted.Bands>0 then return fitted end
     end
     api=createEndlessController({Context=function()
         local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
@@ -1267,7 +1320,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not previous.Upgrade then MagnetUpgrades.Stop()end
             if not previous.Pickup then Pickup.Stop()end
         end
-        previous=nil;plan=nil;planDepth=nil
+        previous=nil;plan=nil;planDepth=nil;profileCenter=nil
     end,Release=release,Update=function(self,c)
         local now=os.clock()
         if HUD.equipped()~="Magnet"then
@@ -1276,15 +1329,17 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
-            if c.Depth~=planDepth then plan=nil;planDepth=c.Depth;band=1;angle=0;nextPlan=0;progressAt=now;progressItems=Pickup.Items end
+            if c.Depth~=planDepth then plan=nil;profileCenter=nil;planDepth=c.Depth;band=1;angle=0;nextPlan=0;progressAt=now;progressItems=Pickup.Items end
             if now>=nextPlan then plan=buildPlan();nextPlan=now+4 end
             if not plan then release();self.Status="Waiting for remaining mound targets";return end
+            band=(band-1)%#plan.Bands+1
+            self.RingCount=#plan.Bands;self.RingName=plan.Bands[band].Name
             if Pickup.Items~=progressItems then progressItems=Pickup.Items;progressAt=now end
             if now-progressAt>1.5 then angle+=math.pi/3;band=band%#plan.Bands+1;progressAt=now;record("StallAdvance",{Band=band})end
-            local b=plan.Bands[band]
+            local b=plan.Bands[band];local radius=ringPlanner.RadiusAt(b,angle)
             local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-            target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*b.Radius
-            focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,b.Radius-7)
+            target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
+            focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
         else
             if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
@@ -1316,7 +1371,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
-                Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Events=events}))
+                Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
@@ -1327,9 +1382,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
-                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-                target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*b.Radius
-                focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,b.Radius-7)
+                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=ringPlanner.RadiusAt(b,angle)
+                target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*radius
+                focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
             end
             for _,part in ipairs(char:GetChildren())do if part:IsA("BasePart")then if collision[part]==nil then collision[part]=part.CanCollide end;part.CanCollide=false end end
             hum.AutoRotate=false
@@ -1337,7 +1392,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
             if api.Stage=="Mining"then
                 angle+=math.min(dt,.1)*.45
-                if angle>=math.pi*2 then angle%=math.pi*2;api.Laps+=1;band=band%3+1 end
+                if angle>=math.pi*2 then angle%=math.pi*2;api.Laps+=1;band=band%#plan.Bands+1 end
             end
         end)
         if not ok then api.Stop();record("MovementError",tostring(err))end
@@ -1470,7 +1525,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.6.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless}
+local Hub={Running=true,Version="1.6.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -1605,7 +1660,7 @@ task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nHover: "..Endless.Hover.." studs | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
