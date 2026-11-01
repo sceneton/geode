@@ -8,7 +8,9 @@ Native Roblox menu with collection, camp, egg and GEO-MAG upgrade automation.
 loadstring(game:HttpGet("https://raw.githubusercontent.com/sceneton/geode/main/loader.lua?refresh=" .. tostring(os.time())))()
 ```
 
-Right Ctrl opens/closes the menu. Automation starts off on a manual load. A queued teleport reload restores the enabled options from the preceding session.
+Right Ctrl opens/closes the menu. Startup automatically restores the saved default config, including its enabled automation. With no saved config, automation starts off. A queued teleport reload restores the enabled options from the preceding session instead of the config's automation toggles.
+
+Use **Save Config** after changing settings. **Auto-load Saved Config** defaults on; turn it off and save to disable restoration on future manual loads. Older saved configs automatically migrate to this behavior. Repeated or concurrent loaders reuse the active menu.
 
 A local cached copy can also be loaded:
 
@@ -73,3 +75,5 @@ A changed JobId establishes a server change. A changed RunStart in the same surv
 The pickup loop and camp sequence were exercised live. Egg single-triple and overlapping-triple requests were tested with permission; simultaneous requests received Busy rejections. Scheduling, candy limits, upgrades, cleanup, bag-change timing, queue lifecycle and loader recovery have focused local tests. Some controller integrations still need ordinary live observation.
 
 The raw game dump, player state, and diagnostic logs are kept local and are not included in this repository.
+
+
