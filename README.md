@@ -22,6 +22,7 @@ loadstring(readfile("GeodeHub/loader.lua"))()
 
 - **Auto Endless Mode:** follows five fitted mound contours (base, lower slope, middle, upper slope and crown), advances past depleted sections, manages native-paced pickup, cash upgrades and camp cycles, and targets boss weak points with normal hits between openings. The contours use all remaining column stacks and 16 angular sectors; they update every four seconds with their axis pinned to the boss. It resumes mining at the next depth. Camp visits and manual cracking temporarily own movement and camera. Requires an owned GEO-MAG 3000 and waits outside Endless mode. It does not cash out, escape or replay.
 - **Endless Hover Clearance:** defaults to 6.5 studs (twice the older needle character clearance of 3.25), adjustable from 2 to 20 studs. Both this setting and Auto Endless save to config and teleport continuation.
+- **Auto Select Perk:** ranks Endless offers for a GEO-MAG-only run and uses the native card-pick function once the cards are ready. It handles offers already open when enabled, scores actual rarity/stack counts, and confirms choices through server events or replicated perk counts. It sends one selection per offer and does not reroll. This separate toggle defaults off and saves to config and teleport continuation.
 - **Auto Geode Pickup:** selects valid nearby mound targets, uses the equipped owned tool, respects its calculated cooldown and a configurable range up to 26 studs. Pet feedback is excluded from tool confirmation counts.
 - **Auto Crack and Sell:** starts a fixed 10-second window after the first bag-count change. Later pickups do not restart it. It suspends collection, deposits, enters a free station, uses Crack All, leaves, sells, and returns to the original pickup position. A fresh bag change starts the next window.
 - **Auto Upgrade GEO-MAG 3000:** buys only Pull Power and Pulse Speed with run cash, checks affordability and replicated levels, and waits during camp cycles.
@@ -54,8 +55,17 @@ This fixes a confirmed issue where an HTTP request returned success with an empt
 | `Geode/haunted_egg_diagnostics.json` | Egg requests/results |
 | `Geode/magnet_upgrade_diagnostics.json` | Upgrade confirmations |
 | `Geode/auto_endless_diagnostics.json` | Endless phase, hover/lap and boss-hit diagnostics |
+| `Geode/auto_perk_diagnostics.json` | Offered card rankings, reasons, selection/confirmation events and current ranking context |
 
 Loading a saved config can enable its saved automation toggles.
+
+### GEO-MAG perk priorities
+
+These are heuristic priorities for reaching more Endless depths, rather than a guaranteed optimum. Shortcut, recurring Oil Flask sustain, Eternal Flame and Wide Sweep are high priorities. Pile damage, Chain Reaction and boss damage follow, with rarity/stack count and existing modifiers affecting their order. Emergency oil takes priority when less than a minute of effective burn time remains. Extra recurring oil is downgraded when the existing income covers the recently measured depth pace.
+
+Speed perks are downgraded once the native magnet interval is already below the pickup loop's 50 ms request floor. Bag perks are downgraded with unlimited capacity. Crack-power bonuses are evaluated through the boss damage square-root curve. Cash/value is more useful before GEO-MAG upgrades are maxed. Ability perks are low priority because Auto Endless currently does not activate tool abilities. The ranking export includes the current order and the actual reasoning for each offered card.
+
+The native selection path was checked live: an Epic Tempered card was selected over Gem Finder and Bottomless Luck and confirmed by the server. No rerolls were used.
 
 The measured fresh-pile ring radii are approximately 33.5, 28.0, 21.9, 15.6 and 9.8 studs. Radius varies with angle, depth shape and depletion. Character paths sit above the fitted slice by the configured hover clearance. Geometry tests covered all 1,577 columns in a live snapshot, with 13,387 generated blueprint cell locations and 3,785 deduplicated visible targets. Blueprint positions include already-mined cells; runtime planning uses remaining stack counts. The five-ring update was checked live through depth 15 boss defeat and resumption of mining at depth 16.
 
