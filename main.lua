@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.5.1"
+local geodeVersion="1.6.0"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -1126,7 +1126,7 @@ local function createLiveEscape(CrackSell)
         local root=character and character:FindFirstChild("HumanoidRootPart")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         return {Identity=character,Run=State.run("RunStart",""),
-            Ready=State.role()=="Game"and State.run("Phase","")=="Escape"and State.run("LiftOpen",false)==true,
+            Ready=State.role()=="Game"and State.run("Mode","")~="Endless"and State.run("Phase","")=="Escape"and State.run("LiftOpen",false)==true,
             Escaped=player:GetAttribute("Escaped")==true,Ended=State.run("Ended",false)==true,
             Alive=root~=nil and humanoid~=nil and humanoid.Health>0,
             Distance=root and(root.Position-exit).Magnitude or math.huge}
@@ -1149,6 +1149,228 @@ local function createLiveEscape(CrackSell)
 end
 
 local Escape=createLiveEscape(CrackSell)
+local function createEndlessController(options)
+    local api={Running=true,Enabled=false,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    local managedRun;local managed=false;local previousPhase
+    function api.Start()if api.Running then api.Enabled=true end end
+    function api.Stop()
+        api.Enabled=false;api.Stage="Paused";api.Status="Paused"
+        options.Release()
+        if managed then options.Finish()end
+        managed=false;managedRun=nil;previousPhase=nil
+    end
+    function api.Unload()api.Stop();api.Running=false end
+    function api.SetHover(value)
+        value=tonumber(value)
+        if value and value==value then api.Hover=math.clamp(value,2,20)end
+    end
+    function api.Tick()
+        if not api.Running or not api.Enabled then return end
+        local c=options.Context()
+        if managed and(not c.Endless or c.Ended)then options.Release();options.Finish();managed=false;managedRun=nil end
+        local stage,status
+        if not c.Endless then stage,status="Waiting","Waiting for Endless mode"
+        elseif c.Ended then stage,status="Waiting","Endless run ended"
+        elseif not c.Alive then stage,status="Waiting","Waiting for a living character"
+        elseif not c.Owned then stage,status="Waiting","GEO-MAG 3000 ownership required"
+        else
+            if not managed or managedRun~=c.Run or(c.Phase=="Mining"and previousPhase~="Mining")then options.Manage();managed=true;managedRun=c.Run end
+            if c.CampBusy then stage,status="Camp","Camp cycle owns movement"
+            elseif c.Phase=="Mining"then stage,status="Mining","Hovering around the mound"
+            elseif c.Phase=="Mother"and c.HP>0 then stage,status="Boss","Targeting boss weak points"
+            else stage,status="Waiting","Waiting for the next mining depth"end
+        end
+        api.Stage,api.Status=stage,status
+        previousPhase=c.Phase
+        if stage=="Mining"or stage=="Boss"then options.Update(api,c)else options.Release()end
+    end
+    return api
+end
+
+local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
+    local P=game:GetService("Players").LocalPlayer
+    local R=game:GetService("RunService")
+    local H=game:GetService("HttpService")
+    local MTG=game:GetService("ReplicatedStorage").MTG
+    local C=P.PlayerScripts.MTGClient
+    local S=require(C.State)
+    local Render=require(C.MoundRender)
+    local Tools=require(C.Tools)
+    local HUD=require(C.RunHUD)
+    local Bench=require(C.Bench)
+    local target,focus,ownedCharacter,ownedHumanoid,autoRotate
+    local collision={};local savedCamera;local previous
+    local plan,planDepth;local nextPlan=0;local angle=0;local band=1
+    local nextHit=0;local nextEquip=0;local progressItems=0;local progressAt=0
+    local events={};local api
+    local function record(kind,data)
+        events[#events+1]={Kind=kind,At=os.time(),Depth=S.run("Depth"),Data=data}
+        if #events>100 then table.remove(events,1)end
+    end
+    local function release()
+        target=nil;focus=nil
+        for part,value in pairs(collision)do if part.Parent then part.CanCollide=value end end
+        collision={}
+        if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid.AutoRotate=autoRotate end
+        ownedCharacter=nil;ownedHumanoid=nil
+        if savedCamera then
+            if savedCamera.Camera==workspace.CurrentCamera then
+                savedCamera.Camera.CameraType=savedCamera.Type
+                savedCamera.Camera.CameraSubject=savedCamera.Subject
+            end
+            savedCamera=nil
+        end
+    end
+    local function buildPlan()
+        local origin=Render.origin()
+        local folder=Render.Folder
+        if not origin or not folder then return nil end
+        local parts=folder:GetChildren();local stride=math.max(1,math.ceil(#parts/1024))
+        local samples={};local top=origin.Y
+        for i=1,#parts,stride do
+            local p=parts[i]
+            if p:IsA("BasePart")and p.Transparency<1 and p.CanQuery then
+                local col,id=Render.target(p)
+                if col~=nil and id~=nil then
+                    samples[#samples+1]=p.Position
+                    top=math.max(top,p.Position.Y+p.Size.Y/2)
+                end
+            end
+        end
+        if #samples==0 then return nil end
+        local height=math.max(1,top-origin.Y);local bands={}
+        for _,fraction in ipairs({.2,.55,.85})do
+            local y=origin.Y+height*fraction;local radii={}
+            for _,p in ipairs(samples)do if math.abs(p.Y-y)<=math.max(3,height*.22)then
+                radii[#radii+1]=Vector2.new(p.X-origin.X,p.Z-origin.Z).Magnitude
+            end end
+            table.sort(radii)
+            bands[#bands+1]={Y=y,Radius=math.clamp(radii[math.max(1,math.ceil(#radii*.85))]or 12,3,38)}
+        end
+        return {Origin=origin,Bands=bands}
+    end
+    api=createEndlessController({Context=function()
+        local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
+        return {Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
+            Run=S.run("RunStart"),Depth=S.run("Depth"),HP=S.run("MotherHP",0),Ended=S.run("Ended",false)==true or S.run("EndlessOver",false)==true,
+            Alive=hum~=nil and hum.Health>0 and char:FindFirstChild("HumanoidRootPart")~=nil,
+            Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
+    end,Manage=function()
+        if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
+        if not Pickup.Enabled then Pickup.Start()end
+        if not MagnetUpgrades.Enabled then MagnetUpgrades.Start()end
+        if not MagnetUpgrades.IsMaxed()and not CrackSell.Enabled then CrackSell.Start()end
+        record("RunManaged",{})
+    end,Finish=function()
+        if previous then
+            if not previous.Crack then CrackSell.Stop("Auto Endless stopped")end
+            if not previous.Upgrade then MagnetUpgrades.Stop()end
+            if not previous.Pickup then Pickup.Stop()end
+        end
+        previous=nil;plan=nil;planDepth=nil
+    end,Release=release,Update=function(self,c)
+        local now=os.clock()
+        if HUD.equipped()~="Magnet"then
+            release()
+            if now>=nextEquip then nextEquip=now+1;HUD.selectTool("Magnet")end
+            self.Status="Equipping GEO-MAG 3000";return
+        end
+        if c.Phase=="Mining"then
+            if c.Depth~=planDepth then plan=nil;planDepth=c.Depth;band=1;angle=0;nextPlan=0;progressAt=now;progressItems=Pickup.Items end
+            if now>=nextPlan then plan=buildPlan();nextPlan=now+4 end
+            if not plan then release();self.Status="Waiting for remaining mound targets";return end
+            if Pickup.Items~=progressItems then progressItems=Pickup.Items;progressAt=now end
+            if now-progressAt>1.5 then angle+=math.pi/3;band=band%#plan.Bands+1;progressAt=now;record("StallAdvance",{Band=band})end
+            local b=plan.Bands[band]
+            local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+            target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*b.Radius
+            focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,b.Radius-7)
+        else
+            if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
+            local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
+            if not body then release();self.Status="Waiting for boss body";return end
+            local root=P.Character.HumanoidRootPart;local spot=0;local at=Vector3.zero;local hasWeak=false
+            for i=1,4 do
+                local dir=S.run("MotherSpot"..i)
+                if typeof(dir)=="Vector3"and dir.Magnitude>.5 and S.run("MotherSpot"..i.."Id",0)~=0 and S.run("MotherSpot"..i.."Hits",0)>0 then
+                    hasWeak=true
+                    at=body.Position+dir.Unit*(body.Size.X/2)
+                    target=body.Position+dir.Unit*(body.Size.X/2+self.Hover)-Vector3.new(0,1.5,0)
+                    focus=at
+                    spot=Tools.spotAt(at)or 0
+                    break
+                end
+            end
+            if not hasWeak then
+                local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+                target=body.Position+radial*(body.Size.X/2+self.Hover);focus=body.Position
+            end
+            if now>=nextHit and(root.Position-body.Position).Magnitude<38 then
+                nextHit=now+.125
+                MTG.Remotes.Mother:FireServer("Hit",1,"Magnet",spot~=0 and 1 or 0,spot,spot~=0 and at or Vector3.zero)
+                self.Hits+=1;if spot~=0 then self.WeakHits+=1 end
+            end
+        end
+    end})
+    function api.Export()
+        return pcall(function()
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
+                Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Events=events}))
+        end)
+    end
+    local movement=R.Heartbeat:Connect(function(dt)
+        if CrackSell.Busy or Bench.isCracking()then release();return end
+        if not api.Enabled or not target then return end
+        local ok,err=pcall(function()
+            local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
+            if not root or not hum or hum.Health<=0 then release();return end
+            if char~=ownedCharacter then release();return end
+            if api.Stage=="Mining"and plan then
+                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+                target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*b.Radius
+                focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,b.Radius-7)
+            end
+            for _,part in ipairs(char:GetChildren())do if part:IsA("BasePart")then if collision[part]==nil then collision[part]=part.CanCollide end;part.CanCollide=false end end
+            hum.AutoRotate=false
+            root.CFrame=CFrame.lookAt(target,focus)
+            root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
+            if api.Stage=="Mining"then
+                angle+=math.min(dt,.1)*.45
+                if angle>=math.pi*2 then angle%=math.pi*2;api.Laps+=1;band=band%3+1 end
+            end
+        end)
+        if not ok then api.Stop();record("MovementError",tostring(err))end
+    end)
+    local renderName="GeodeEndlessCamera_"..tostring(P.UserId)
+    R:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function()
+        if not api.Enabled or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
+        local cam=workspace.CurrentCamera;if not cam then return end
+        if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject}end
+        local direction=(target-focus).Unit
+        cam.CameraType=Enum.CameraType.Scriptable
+        cam.CFrame=CFrame.lookAt(target+direction*3+Vector3.new(0,2,0),focus)
+    end)
+    local unload=api.Unload
+    function api.Unload()unload();movement:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(function()
+                -- Capture character restoration values before Update creates a target.
+                if api.Enabled and(P.Character~=ownedCharacter or not ownedHumanoid)then
+                    release();ownedCharacter=P.Character;ownedHumanoid=ownedCharacter and ownedCharacter:FindFirstChildOfClass("Humanoid")
+                    autoRotate=ownedHumanoid and ownedHumanoid.AutoRotate
+                end
+                api.Tick()
+            end)
+            if not ok then api.Stop();api.Status="Endless error: "..tostring(err);record("Error",tostring(err))end
+            task.wait(.125)
+        end
+    end)
+    return api
+end
+
+local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
 local function createGeodeTeleportContinuation(options)
     local api={Enabled=true,Running=true,Installed=false}
     function api.Save()
@@ -1248,12 +1470,13 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.5.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape}
+local Hub={Running=true,Version="1.6.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    Endless.Unload()
     Escape.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
     MagnetUpgrades.Unload()
@@ -1268,6 +1491,16 @@ local overview=Window:Section({Title="Overview"})
 local main=overview:Tab({Title="Main"})
 local eggs=overview:Tab({Title="Eggs"})
 local settings=overview:Tab({Title="Configs & Settings"})
+main:Section({Title="Endless Farming"})
+local endlessToggle=main:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
+    if value then Endless.Start()else Endless.Stop()end
+end})
+local hoverHeight=main:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
+local endlessStatus=main:Paragraph({Title="Endless Status",Desc="Paused — manages pickup, camp visits, upgrades and boss weak points in Endless mode."})
+main:Button({Title="Export Endless Diagnostics",Callback=function()
+    local ok,err=Endless.Export()
+    NativeUI:Notify({Title="Endless Diagnostics",Content=ok and"Saved to Geode/auto_endless_diagnostics.json"or tostring(err)})
+end})
 main:Section({Title="Geode Collection"})
 local pickupToggle=main:Toggle({Title="Auto Geode Pickup",Value=false,Callback=function(value)
     if value then Pickup.Start()else Pickup.Stop()end
@@ -1323,6 +1556,8 @@ config:Register("AutoCrackAndSell",crackToggle)
 config:Register("CrackSellBagDelay",cycleInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("AutoEscape",escapeToggle)
+config:Register("EndlessHover",hoverHeight)
+config:Register("AutoEndless",endlessToggle)
 settings:Button({Title="Save Config",Callback=function()
     local result,err=config:Save()
     NativeUI:Notify({Title="Config",Content=result and"Saved default config"or("Save failed: "..tostring(err))})
@@ -1341,7 +1576,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -1352,12 +1587,14 @@ local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 10)
+    hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     if type(resumed.MenuKey)=="string"and Enum.KeyCode[resumed.MenuKey]then menuKey:Set(resumed.MenuKey)end
     pickupToggle:Set(resumed.Pickup==true)
     eggToggle:Set(resumed.Eggs==true)
     crackToggle:Set(resumed.CrackSell==true)
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
     escapeToggle:Set(resumed.Escape==true)
+    endlessToggle:Set(resumed.Endless==true)
     if resumed.MenuClosed then Window:Close()end
 end
 continuation.Save()
@@ -1367,6 +1604,8 @@ NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous op
 task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
+        if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
+        endlessStatus:SetDesc(Endless.Status.."\nHover: "..Endless.Hover.." studs | Laps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
