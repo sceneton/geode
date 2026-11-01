@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.4.4"
+local geodeVersion="1.5.0"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -992,6 +992,15 @@ local CrackSell=createLiveCrackSell(Pickup)
 local function createMagnetUpgradeController(options)
     local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0
     local api={Running=true,Enabled=false,InFlight=false,Status="Paused",Confirmed=0}
+    function api.IsMaxed()
+        local context=options.Context()
+        if not context.Owned then return false end
+        for _,id in ipairs(ids)do
+            local def=context.Tracks[id]
+            if not def or type(def.Max)~="number"or def.Max<=0 or(context.Levels[id]or 0)<def.Max then return false end
+        end
+        return true
+    end
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
     function api.Start()if not api.Running then return end;api.Enabled=true;api.Status="Checking GEO-MAG upgrades"end
     function api.Stop(reason)api.Enabled=false;api.Status=reason or"Paused";record("Stopped",{Reason=api.Status})end
@@ -1077,6 +1086,56 @@ local function createLiveMagnetUpgrades(CrackSell)
 end
 
 local MagnetUpgrades=createLiveMagnetUpgrades(CrackSell)
+local function createEscapeController(options)
+    local api={Running=true,Enabled=false,Status="Paused",Attempts=0}
+    local identity;local run;local nextMove=0;local arrived=false
+    function api.Start()api.Enabled=true;api.Status="Waiting for the exit to open"end
+    function api.Stop()api.Enabled=false;api.Status="Paused";identity=nil;api.Attempts=0;arrived=false end
+    function api.Unload()api.Stop();api.Running=false end
+    function api.Tick()
+        if not api.Running or not api.Enabled then return end
+        local c=options.Context()
+        if identity~=c.Identity or run~=c.Run then identity=c.Identity;run=c.Run;api.Attempts=0;nextMove=0;arrived=false end
+        if c.Escaped then api.Status="Escape confirmed by server";return end
+        if c.Ended then api.Status="Round ended";return end
+        if not c.Ready then api.Status="Waiting for the exit to open";return end
+        if not c.Alive then api.Status="Waiting for a living character";return end
+        if arrived and c.Distance<=4 then api.Status="At exit — waiting for server confirmation";return end
+        if options.Now()<nextMove then return end
+        if api.Attempts>=10 then api.Status="Escape not confirmed after 10 attempts";return end
+        local ok,err=pcall(options.Move)
+        nextMove=options.Now()+1
+        if not ok then api.Status="Exit movement failed: "..tostring(err);return end
+        api.Attempts+=1;arrived=true
+        api.Status="At exit — waiting for server confirmation"
+    end
+    return api
+end
+
+local function createLiveEscape(CrackSell)
+    local player=game:GetService("Players").LocalPlayer
+    local State=require(player.PlayerScripts.MTGClient.State)
+    local exit=Vector3.new(702.1797485351562,3.2499985694885254,80.727294921875)
+    return createEscapeController({Now=os.clock,Context=function()
+        local character=player.Character
+        local root=character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        return {Identity=character,Run=State.run("RunStart",""),
+            Ready=State.role()=="Game"and State.run("Phase","")=="Escape"and State.run("LiftOpen",false)==true,
+            Escaped=player:GetAttribute("Escaped")==true,Ended=State.run("Ended",false)==true,
+            Alive=root~=nil and humanoid~=nil and humanoid.Health>0,
+            Distance=root and(root.Position-exit).Magnitude or math.huge}
+    end,Move=function()
+        if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Stopped for auto escape")end
+        local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        assert(root,"Character root unavailable")
+        root.CFrame=CFrame.new(exit)*root.CFrame.Rotation
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+    end})
+end
+
+local Escape=createLiveEscape(CrackSell)
 local function createGeodeTeleportContinuation(options)
     local api={Enabled=true,Running=true,Installed=false}
     function api.Save()
@@ -1176,12 +1235,13 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.4.4",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades}
+local Hub={Running=true,Version="1.5.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    Escape.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
     MagnetUpgrades.Unload()
     CrackSell.Unload()
@@ -1215,6 +1275,12 @@ local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=1,
     CrackSell.SetInterval(value)
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
+main:Paragraph({Title="Upgrade Limit",Desc="Auto Crack and Sell turns off when both GEO-MAG upgrades reach their maximum replicated levels."})
+main:Section({Title="Escape"})
+local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
+    if value then Escape.Start()else Escape.Stop()end
+end})
+local escapeStatus=main:Paragraph({Title="Escape Status",Desc="Paused — waits for Escape phase and the open lift, then moves to your saved exit position."})
 main:Button({Title="Export Crack & Sell Diagnostics",Callback=function()
     local ok,err=CrackSell.Export()
     NativeUI:Notify({Title="Crack & Sell Diagnostics",Content=ok and"Saved to Geode/auto_crack_sell_diagnostics.json"or tostring(err)})
@@ -1243,6 +1309,7 @@ config:Register("AutoOpenHauntedEgg",eggToggle)
 config:Register("AutoCrackAndSell",crackToggle)
 config:Register("CrackSellBagDelay",cycleInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
+config:Register("AutoEscape",escapeToggle)
 settings:Button({Title="Save Config",Callback=function()
     local result,err=config:Save()
     NativeUI:Notify({Title="Config",Content=result and"Saved default config"or("Save failed: "..tostring(err))})
@@ -1261,7 +1328,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,MagnetUpgrades=MagnetUpgrades.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -1277,6 +1344,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     eggToggle:Set(resumed.Eggs==true)
     crackToggle:Set(resumed.CrackSell==true)
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
+    escapeToggle:Set(resumed.Escape==true)
     if resumed.MenuClosed then Window:Close()end
 end
 continuation.Save()
@@ -1285,6 +1353,14 @@ retireGeodeMenus(Window.Gui)
 NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous options restored after teleport."or(loaded and"Default config restored. Right Ctrl opens or closes the menu."or("Right Ctrl opens or closes the menu. "..tostring(loadError)))})
 task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
+        if CrackSell.Enabled and MagnetUpgrades.IsMaxed()then
+            CrackSell.Stop("Both GEO-MAG upgrades are maxed — auto crack and sell disabled")
+            continuation.Save()
+        end
+        local escapeOK,escapeError=pcall(Escape.Tick)
+        if not escapeOK then Escape.Stop();Escape.Status="Escape error: "..tostring(escapeError)end
+        if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
+        escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
