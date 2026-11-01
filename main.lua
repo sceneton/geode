@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.4.2"
+local geodeVersion="1.4.3"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1173,7 +1173,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.4.2",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades}
+local Hub={Running=true,Version="1.4.3",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
