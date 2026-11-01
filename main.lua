@@ -2,11 +2,74 @@
 if not game:IsLoaded()then game.Loaded:Wait()end
 if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the Geode!");return end
 local env=getgenv()
-if env.GeodeHub and type(env.GeodeHub.Unload)=="function"then pcall(env.GeodeHub.Unload)end
+-- Claim startup before module initialization can yield. The shared instance also
+-- covers queued chunks whose executor globals are isolated from one another.
+local geodeVersion="1.4.2"
 local geodePlayer=game:GetService("Players").LocalPlayer
-if not geodePlayer then warn("[Geode Hub] Local player unavailable");return end
+if not geodePlayer then error("Local player unavailable")end
+local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
+assert(geodeGui,"PlayerGui did not load")
+local boot=geodeGui:FindFirstChild("GeodeHubSession")
+if boot and boot:GetAttribute("JobId")==game.JobId then
+    if boot:GetAttribute("Stage")=="Ready"and boot:GetAttribute("Version")==geodeVersion then
+        return env.GeodeHub or {Running=true,Reused=true}
+    end
+    if boot:GetAttribute("Stage")=="Starting"and os.clock()-(boot:GetAttribute("StartedAt")or 0)<60 then
+        return {Pending=true}
+    end
+    local stop=boot:FindFirstChild("Unload")
+    if stop and stop:IsA("BindableFunction")then pcall(function()stop:Invoke()end)end
+end
+if boot then boot:Destroy()end
+if env.GeodeHub and type(env.GeodeHub.Unload)=="function"then pcall(env.GeodeHub.Unload)end
+boot=Instance.new("Folder")
+boot.Name="GeodeHubSession"
+boot:SetAttribute("JobId",game.JobId)
+boot:SetAttribute("Version",geodeVersion)
+boot:SetAttribute("Stage","Starting")
+boot:SetAttribute("StartedAt",os.clock())
+boot.Parent=geodeGui
+local stop=Instance.new("BindableFunction")
+stop.Name="Unload"
+stop.Parent=boot
+-- Retire menus from releases predating the shared session marker. Invoke only
+-- our own Unload Hub control so its workers and event connections stop as well.
+local parents={geodeGui}
+if type(gethui)=="function"then local ok,p=pcall(gethui);if ok and p then table.insert(parents,p)end end
+pcall(function()table.insert(parents,game:GetService("CoreGui"))end)
+local seen={}
+for _,parent in ipairs(parents)do
+    if not seen[parent]then
+        seen[parent]=true
+        for _,gui in ipairs(parent:GetChildren())do
+            if gui.Name=="GeodeNativeHub"and gui:IsA("ScreenGui")then
+                if type(getconnections)=="function"and debug and type(debug.getupvalues)=="function"then
+                    for _,button in ipairs(gui:GetDescendants())do
+                        if button:IsA("TextButton")and button.Text=="Unload Hub"then
+                            pcall(function()
+                                for _,connection in ipairs(getconnections(button.Activated))do
+                                    if type(connection.Function)=="function"then
+                                        for _,value in pairs(debug.getupvalues(connection.Function))do
+                                            if type(value)=="table"and value.Title=="Unload Hub"and type(value.Callback)=="function"then pcall(value.Callback)end
+                                        end
+                                    end
+                                end
+                            end)
+                        end
+                    end
+                end
+                gui:Destroy()
+            end
+        end
+    end
+end
+local function releaseGeodeBoot()
+    if boot.Parent then boot:Destroy()end
+end
+
+local success,result=pcall(function()
 local geodeScripts=geodePlayer:WaitForChild("PlayerScripts",15)
-if not geodeScripts or not geodeScripts:WaitForChild("MTGClient",15)then warn("[Geode Hub] Game client did not load");return end
+assert(geodeScripts and geodeScripts:WaitForChild("MTGClient",15),"Game client did not load")
 -- Beyy native UI. Embedded into each module; no remote UI dependency.
 local function createNativeUI()
     local UI = {}
@@ -32,51 +95,65 @@ local function createNativeUI()
     end
     local function configManager(folder)
         local manager={Path="WindUI/"..folder.."/config/"}
-        if type(makefolder)=="function" then
-            for _,path in ipairs({"WindUI","WindUI/"..folder,manager.Path}) do
-                pcall(function() if type(isfolder)~="function" or not isfolder(path) then makefolder(path) end end)
-            end
-        end
-        function manager:AllConfigs()
-            local names={}
-            if type(listfiles)=="function" then
-                local ok,files=pcall(listfiles,self.Path)
-                if ok then for _,path in ipairs(files) do local name=path:match("([^/\\]+)%.json$"); if name then table.insert(names,name) end end end
-            end
-            return names
-        end
         function manager:CreateConfig(name)
-            assert(type(name)=="string" and name~="" and not name:find("[/\\]"),"Invalid config name")
-            local cfg={Path=self.Path..name..".json",Elements={},CustomData={},Version=1.2,AutoLoad=false}
-            function cfg:Register(key,el) self.Elements[key]=el end
-            function cfg:Save()
-                assert(type(writefile)=="function","Config saving requires writefile")
-                local saved={__version=self.Version,__elements={},__custom=self.CustomData,__autoload=self.AutoLoad}
-                for key,el in pairs(self.Elements) do
-                    local value=el.Value
-                    if el.__type=="Slider" then value=value.Default end
-                    saved.__elements[key]={__type=el.__type,value=value}
-                end
-                writefile(self.Path,http:JSONEncode(saved))
-                return saved
+            assert(type(name)=="string"and name~=""and not name:find("[/\\]"),"Invalid config name")
+            local cfg={Path=self.Path..name..".json",Elements={},Order={},CustomData={},Version=1.3}
+            function cfg:Register(key,el)
+                if not self.Elements[key]then table.insert(self.Order,key)end
+                self.Elements[key]=el
             end
-            function cfg:Load()
-                if type(readfile)~="function" then return false,"Config loading requires readfile" end
-                local ok,data=pcall(function() return http:JSONDecode(readfile(self.Path)) end)
-                if not ok or type(data)~="table" then return false,"Failed to read config" end
-                for key,entry in pairs(data.__elements or data) do
-                    local el=self.Elements[key]
-                    if el and type(entry)=="table" and entry.__type==el.__type then
-                        if el.__type=="Dropdown" then el:Select(entry.value) else el:Set(entry.value) end
+            function cfg:Read()
+                if type(readfile)~="function"then return nil,"Config loading requires readfile"end
+                local ok,data=pcall(function()return http:JSONDecode(readfile(self.Path))end)
+                if not ok or type(data)~="table"or type(data.__elements)~="table"then return nil,"No readable saved config"end
+                return data
+            end
+            function cfg:Save()
+                local ok,result=pcall(function()
+                    assert(type(writefile)=="function"and type(readfile)=="function","Config saving requires writefile/readfile")
+                    for _,path in ipairs({"WindUI","WindUI/"..folder,manager.Path})do
+                        if not isfolder(path)then makefolder(path)end
+                    end
+                    local saved={__version=self.Version,__elements={},__custom=self.CustomData}
+                    for key,el in pairs(self.Elements)do
+                        local value=el.__type=="Slider"and el.Value.Default or el.Value
+                        saved.__elements[key]={__type=el.__type,value=value}
+                    end
+                    local encoded=http:JSONEncode(saved)
+                    writefile(self.Path,encoded)
+                    assert(readfile(self.Path)==encoded,"Saved config read-back did not match")
+                    return saved
+                end)
+                if not ok then return false,tostring(result)end
+                return result
+            end
+            function cfg:Load(startup,skipAutomation)
+                local data,err=self:Read()
+                if not data then return false,err end
+                local auto=data.__elements.AutoLoadConfig
+                if startup and auto and auto.value==false then return false,"Auto-load disabled"end
+                -- Parameters and continuation settings precede automation toggles.
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true}
+                for pass=1,2 do
+                    for _,key in ipairs(self.Order)do
+                        if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
+                            local el,entry=self.Elements[key],data.__elements[key]
+                            if type(entry)=="table"and entry.__type==el.__type then
+                                local value=entry.value
+                                local valid=(el.__type=="Toggle"and type(value)=="boolean")or(el.__type=="Slider"and type(value)=="number"and value==value and math.abs(value)<math.huge)or(el.__type=="Keybind"and type(value)=="string"and Enum.KeyCode[value]~=nil)
+                                if valid then el:Set(value)end
+                            end
+                        end
                     end
                 end
-                self.CustomData=data.__custom or {}
+                self.CustomData=type(data.__custom)=="table"and data.__custom or {}
                 return self.CustomData
             end
             return cfg
         end
         return manager
     end
+
     function UI:Notify(options)
         if self.Window and not self.Window.Destroyed then self.Window.Notice.Text=tostring(options.Title or "Beyy")..": "..tostring(options.Content or "") end
     end
@@ -1096,7 +1173,8 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.4.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades}
+local Hub={Running=true,Version="1.4.2",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades}
+Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
@@ -1107,7 +1185,9 @@ function Hub.Unload()
     Pickup.Unload()
     Eggs.Unload()
     Window:Destroy()
+    releaseGeodeBoot()
 end
+stop.OnInvoke=Hub.Unload
 local overview=Window:Section({Title="Overview"})
 local main=overview:Tab({Title="Main"})
 local eggs=overview:Tab({Title="Eggs"})
@@ -1152,6 +1232,8 @@ eggs:Button({Title="Export Egg Diagnostics",Callback=function()
 end})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
+local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
+config:Register("AutoLoadConfig",autoLoad)
 config:Register("AutoGeodePickup",pickupToggle)
 config:Register("PickupRange",pickupRange)
 config:Register("AutoOpenHauntedEgg",eggToggle)
@@ -1159,8 +1241,8 @@ config:Register("AutoCrackAndSell",crackToggle)
 config:Register("CrackSellBagDelay",cycleInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 settings:Button({Title="Save Config",Callback=function()
-    config:Save()
-    NativeUI:Notify({Title="Config",Content="Saved default config"})
+    local result,err=config:Save()
+    NativeUI:Notify({Title="Config",Content=result and"Saved default config"or("Save failed: "..tostring(err))})
 end})
 settings:Button({Title="Load Config",Callback=function()
     local result,err=config:Load()
@@ -1183,6 +1265,7 @@ settings:Button({Title="Unload Hub",Callback=Hub.Unload})
 local session=settings:Paragraph({Title="Session",Desc="Crack the Geode!"})
 local resumed=env.__GeodeTeleportResume
 env.__GeodeTeleportResume=nil
+local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId==10770110947)
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 10)
@@ -1194,9 +1277,10 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     if resumed.MenuClosed then Window:Close()end
 end
 continuation.Save()
-NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous options restored after teleport."or"Right Ctrl opens or closes the menu. Automations start paused."})
+boot:SetAttribute("Stage","Ready")
+NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous options restored after teleport."or(loaded and"Default config restored. Right Ctrl opens or closes the menu."or("Right Ctrl opens or closes the menu. "..tostring(loadError)))})
 task.spawn(function()
-    while Hub.Running and not Window.Destroyed do
+    while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
         if eggToggle.Value~=Eggs.Enabled then eggToggle:Set(Eggs.Enabled)end
         if crackToggle.Value~=CrackSell.Enabled then crackToggle:Set(CrackSell.Enabled)end
@@ -1219,3 +1303,13 @@ task.spawn(function()
 end)
 print("[Geode Hub] Native menu loaded; RightControl toggles the menu. Teleport queue="..tostring(continuation.Installed))
 return Hub
+
+end)
+if not success then
+    if env.GeodeHub and env.GeodeHub.Window and env.GeodeHub.Window.Gui:GetAttribute("GeodeSessionVersion")==geodeVersion then pcall(env.GeodeHub.Unload)end
+    releaseGeodeBoot()
+    error(result)
+end
+if not result then releaseGeodeBoot()end
+return result -- return Hub is inside the protected constructor
+
