@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.4.3"
+local geodeVersion="1.4.4"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -34,6 +34,7 @@ stop.Name="Unload"
 stop.Parent=boot
 -- Retire menus from releases predating the shared session marker. Invoke only
 -- our own Unload Hub control so its workers and event connections stop as well.
+local function retireGeodeMenus(keep)
 local parents={geodeGui}
 if type(gethui)=="function"then local ok,p=pcall(gethui);if ok and p then table.insert(parents,p)end end
 pcall(function()table.insert(parents,game:GetService("CoreGui"))end)
@@ -42,7 +43,7 @@ for _,parent in ipairs(parents)do
     if not seen[parent]then
         seen[parent]=true
         for _,gui in ipairs(parent:GetChildren())do
-            if gui.Name=="GeodeNativeHub"and gui:IsA("ScreenGui")then
+            if gui~=keep and gui.Name=="GeodeNativeHub"and gui:IsA("ScreenGui")then
                 if type(getconnections)=="function"and debug and type(debug.getupvalues)=="function"then
                     for _,button in ipairs(gui:GetDescendants())do
                         if button:IsA("TextButton")and button.Text=="Unload Hub"then
@@ -63,6 +64,8 @@ for _,parent in ipairs(parents)do
         end
     end
 end
+end
+retireGeodeMenus(nil)
 local function releaseGeodeBoot()
     if boot.Parent then boot:Destroy()end
 end
@@ -1173,7 +1176,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.4.3",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades}
+local Hub={Running=true,Version="1.4.4",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -1278,6 +1281,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
 end
 continuation.Save()
 boot:SetAttribute("Stage","Ready")
+retireGeodeMenus(Window.Gui)
 NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous options restored after teleport."or(loaded and"Default config restored. Right Ctrl opens or closes the menu."or("Right Ctrl opens or closes the menu. "..tostring(loadError)))})
 task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
