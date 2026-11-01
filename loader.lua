@@ -19,23 +19,38 @@ local function readSource(file)
     return source
 end
 local onlineOK,online=pcall(function()return game:HttpGet(url.."?refresh="..tostring(os.time()))end)
+local function sourceVersion(source)
+    local version=source:match('local geodeVersion="([%d%.]+)"')or source:match('Version="([%d%.]+)"')or"0.0.0"
+    local numbers={};for number in version:gmatch("%d+")do table.insert(numbers,tonumber(number))end
+    return numbers
+end
+local function newer(a,b)
+    local av,bv=sourceVersion(a),sourceVersion(b)
+    for i=1,math.max(#av,#bv)do
+        if(av[i]or 0)~=(bv[i]or 0)then return(av[i]or 0)>(bv[i]or 0)end
+    end
+    return false
+end
 local compiled,reason=validateGeodeHubSource(onlineOK and online or nil)
-local source,origin
+local source,origin=compiled and online or nil,compiled and"online"or nil
+local cached,backed=readSource(path),readSource(backup)
+for _,candidate in ipairs({{cached,"cache"},{backed,"backup"}})do
+    local fn=validateGeodeHubSource(candidate[1])
+    if fn and(not compiled or newer(candidate[1],source))then
+        source,origin,compiled=candidate[1],candidate[2],fn
+    end
+end
 if compiled then
-    source=online;origin="online"
     pcall(function()
         if not isfolder("GeodeHub")then makefolder("GeodeHub")end
-        local old=readSource(path)
-        if validateGeodeHubSource(old)then writefile(backup,old)
-        elseif not validateGeodeHubSource(readSource(backup))then writefile(backup,source)end
-        writefile(path,source)
+        if source~=cached then
+            -- Preserve the previous valid primary only if that would not downgrade
+            -- a newer backup (for example when a stale CDN response arrives).
+            if validateGeodeHubSource(cached)and(not validateGeodeHubSource(backed)or newer(cached,backed))then writefile(backup,cached)
+            elseif not validateGeodeHubSource(backed)then writefile(backup,source)end
+            writefile(path,source)
+        end
     end)
-else
-    source=readSource(path);compiled=validateGeodeHubSource(source);origin="cache"
-    if not compiled then
-        source=readSource(backup);compiled=validateGeodeHubSource(source);origin="backup"
-        if compiled then pcall(writefile,path,source)end
-    end
 end
 if not compiled then warn("[Geode Hub] No valid online, cached or backup hub. Online source: "..tostring(reason));return end
 print("[Geode Hub] Loading "..origin.." source ("..#source.." bytes)")
