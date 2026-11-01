@@ -31,7 +31,7 @@ loadstring(readfile("GeodeHub/loader.lua"))()
 
 Crack All uses an existing pass or stored credits. The hub does not buy passes, credits, candy packs or Robux products. Closing the menu keeps enabled features running; Unload stops them and disables its teleport continuation.
 
-**Full Auto Farm Wins is not implemented yet.** Boss combat and replay still require integration/testing. Auto Escape's exit movement still needs confirmation during a live boss-defeat transition. The current pickup maximum is 26 studs, even though the magnet's native client can calculate a longer reach.
+**Full Auto Farm Wins is not implemented yet.** Boss combat and replay still require integration/testing. Auto Escape was confirmed live: one exit move produced the server's `Escaped=true` flag. Escape polling and max-upgrade crack/sell shutdown run independently of menu status updates. The current pickup maximum is 26 studs, even though the magnet's native client can calculate a longer reach.
 
 ## Loader and cache recovery
 
