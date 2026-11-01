@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.6.1"
+local geodeVersion="1.7.0"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -1426,6 +1426,230 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
 end
 
 local Endless=createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
+-- GEO-MAG Endless priorities. Heuristic scores, adjusted for the actual card,
+-- current cooldown floor, existing modifiers, oil and replicated bag capacity.
+local function createGeodePerkRanker()
+    local ranker={}
+    function ranker.Score(def,stacks,c)
+        stacks=math.max(1,tonumber(stacks)or 1)
+        local id=def.Id;local mods=c.Mods or{};local bonus=def.Mods or{}
+        local amount=tonumber((c.Owned or{})[id])or 0
+        if def.Max and amount>=def.Max then return nil,"Already at maximum stacks"end
+        if def.Max then stacks=math.min(stacks,def.Max-amount)end
+        local floor=c.RequestFloor or .05
+        local speedUseful=(c.NativeCooldown or 1)>floor+.0001
+        local capped=not speedUseful
+        local early=not c.MagnetMaxed
+        local score,reason=10,"Low-impact fallback for this tool"
+        if id=="Shortcut"then score,reason=100,"Less mining required for every depth"
+        elseif id=="OilFlask"then
+            score,reason=96,"Recurring oil on every cleared depth"
+            if(c.OilPerDepth or 0)>=(c.DepthSeconds or 60)*(c.LanternRate or 1)+5 and(c.OilLeft or 0)>120 then score,reason=59,"Existing recurring oil covers the recent depth pace"end
+        elseif id=="EternalFlame"then score,reason=94,"30% slower lantern consumption for the run"
+        elseif id=="WideSweep"then score,reason=92-math.min(18,math.max(0,mods.Radius or 0)*.15),"Larger magnet collection radius"
+        elseif id=="ChainReaction"then score,reason=83,"Splash damage can help clear neighbouring pile geodes"
+        elseif id=="GoldenHaul"then score,reason=79,"Protects the haul and increases haul gems"
+        elseif id=="BossHunter"then score,reason=74,"Extra chest from every boss"
+        elseif id=="SecondLantern"then score,reason=72,"One emergency lantern relight"
+        elseif id=="LanternWick"then score,reason=70,"Lower oil consumption over many depths"
+        elseif id=="TreasureMap"then score,reason=61,"Recurring bonus chests every ten depths"
+        elseif id=="EchoGrab"then score,reason=42,"Extra collected rewards; faster depth clearing is not assumed"
+        elseif id=="TreasureSense"then score,reason=48,"Improves haul gem rewards"
+        elseif id=="HaulHunter"then score,reason=30+math.min(35,1.5*stacks*2),"Rarity-scaled haul reward gain"
+        elseif id=="GemFinder"then score,reason=44,"More gems, without directly accelerating depth clears"
+        elseif id=="DeepDiver"then score,reason=early and 62 or 23,"Value scales with depth; primarily useful before magnet upgrades are finished"
+        elseif id=="Midas"then score,reason=early and 63 or 24,"Cash generation matters most before magnet upgrades are finished"
+        elseif id=="Polish"or id=="DeepProfit"then score,reason=early and 38 or 14,"Crystal value is secondary after cash upgrades are maxed"
+        elseif id=="ProspectorMap"then score,reason=early and 42 or 27,"Crystal rarity and income rather than direct mining progress"
+        elseif id=="KeenEye"or id=="BottomlessLuck"then score,reason=early and 30 or 17,"Luck mainly improves rewards"
+        elseif id=="DeepPockets"then score,reason=c.BagCapacity==-1 and 0 or 55,c.BagCapacity==-1 and"Unlimited bag: no capacity benefit"or"Fewer capacity interruptions"
+        elseif id=="TunedTumbler"then score,reason=2,"Current automation uses Crack All instead of waiting on tumbler speed"
+        elseif id=="SafetyRope"then score,reason=((c.Owned or{}).GoldenHaul or 0)>0 and 0 or 34,"Loss protection; Golden Haul makes it redundant"
+        elseif id=="Cartographer"then score,reason=19,"Useful for manual rerolls; auto selection does not reroll"
+        elseif id=="MasteryBooster"then score,reason=6,"Future mastery progress rather than current-run depth speed"
+        elseif id=="SpareOil"or id=="SecondWind"then
+            local oil=math.min(def.Oil or 0,math.max(0,(c.OilMax or 600)-(c.OilLeft or 0)))
+            score,reason=oil>0 and 20+oil/20 or 0,"One-time oil refill"
+            if(c.OilLeft or 600)/math.max(.1,c.LanternRate or 1)<60 and oil>0 then score,reason=220+oil/10,"Emergency oil: less than a minute of burn time remains"end
+        elseif id=="LastStand"then score,reason=33,"Conditional low-oil damage bonus; avoid deliberately running out of oil"
+        elseif def.NeedsSkill then score,reason=0,"Current Auto Endless does not activate tool abilities"
+        end
+        if bonus.PileDamage then
+            local gain=bonus.PileDamage*stacks/math.max(10,100+(mods.PileDamage or 0))
+            score=math.max(score,40+math.min(55,gain*200))
+            reason="Direct pile damage; adjusted for existing damage bonuses and card stacks"
+        end
+        if bonus.BossDamage then
+            local gain=bonus.BossDamage*stacks/math.max(10,100+(mods.BossDamage or 0))
+            score=math.max(score,((c.Depth or 1)>=20 and 55 or 40)+math.min(40,gain*200))
+            reason="Direct boss damage, with higher priority at later depths"
+        end
+        if bonus.Power or def.BossPower then
+            local power=(bonus.Power or def.BossPower)*stacks
+            local total=math.max(1,c.CrackPowerPercent or 100)
+            local gain=math.sqrt((total+power)/total)-1
+            score=math.max(score,((c.Depth or 1)>=20 and 55 or 40)+math.min(40,gain*200))
+            reason="Boss benefit follows the square-root crack-power damage curve"
+        end
+        if bonus.PickSpeed or id=="Momentum"then
+            local speed=bonus.PickSpeed or 20
+            if not capped then
+                local old=c.NativeCooldown or 1
+                local projected=math.max(floor,old*(100+(mods.PickSpeed or 0))/(100+(mods.PickSpeed or 0)+speed*stacks))
+                local gain=math.max(0,old/projected-1)
+                score=math.max(score,50+math.min(42,gain*220))
+                reason="Tool speed still reduces the actual pickup interval"
+            elseif not bonus.Power and not bonus.PileDamage then
+                score=(id=="Frenzy"and c.BagCapacity~=-1)and 32 or 0
+                reason="Speed is already capped by the hub's 50 ms request floor"
+            end
+        end
+        return score,reason
+    end
+    function ranker.Choose(cards,definitions,context,stackCount)
+        local rows={};local best
+        for index,card in ipairs(cards or{})do
+            local def=definitions[card.Id]
+            if def then
+                local stacks=stackCount(def,card.Rarity)
+                local score,reason=ranker.Score(def,stacks,context)
+                if score then
+                    local row={Index=index,Id=def.Id,Name=def.Name,Score=score,Reason=reason,Stacks=stacks,Rarity=card.Rarity or def.Rarity}
+                    rows[#rows+1]=row
+                    if not best or score>best.Score then best=row end
+                end
+            end
+        end
+        table.sort(rows,function(a,b)if a.Score==b.Score then return a.Index<b.Index end;return a.Score>b.Score end)
+        return best,rows
+    end
+    return ranker
+end
+
+local function createAutoPerkController(options)
+    local api={Running=true,Enabled=false,Status="Paused",Requests=0,Confirmed=0}
+    local pending;local seen={};local order={}
+    local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
+    local function remember(key)
+        seen[key]=true;order[#order+1]=key
+        if #order>128 then seen[table.remove(order,1)]=nil end
+    end
+    function api.Start()if api.Running then api.Enabled=true;api.Status="Waiting for perk cards"end end
+    function api.Stop()api.Enabled=false;api.Status="Paused"end
+    function api.Unload()api.Stop();api.Running=false end
+    function api.Confirm(message)
+        if not pending then return end
+        if message.Offer~=nil and tostring(message.Offer)~=tostring(pending.Offer)then return end
+        if message.Perk~=nil and message.Perk~=pending.Id then return end
+        if message.Index~=nil and tonumber(message.Index)~=pending.Index then return end
+        if message.Perk==nil and message.Index==nil then return end
+        api.Confirmed+=1;api.Status="Confirmed: "..pending.Name;record("Confirmed",pending);pending=nil
+    end
+    function api.Tick()
+        if not api.Running then return end
+        if not api.Enabled and not pending then return end
+        local c=options.Context();local now=options.Now()
+        if pending then
+            if((c.Owned or{})[pending.Id]or 0)>pending.Before then api.Confirm({Perk=pending.Id})
+            elseif now>=pending.Deadline then record("Unconfirmed",pending);pending=nil;api.Status="Last selection unconfirmed; waiting for a new offer"end
+        end
+        if not api.Enabled or pending then return end
+        if not c.Endless then api.Status="Waiting for Endless mode";return end
+        if not c.ToolOwned then api.Status="GEO-MAG 3000 ownership required";return end
+        if not c.Ready or not c.Key or not c.Offer or c.Test then return end
+        if c.Until and c.Until<=c.ServerNow then return end
+        if seen[c.Key]then return end
+        local best,ranking=options.Choose(c.Cards,c)
+        if not best then api.Status="Unrecognised perk offer — choose manually";return end
+        remember(c.Key)
+        pending={Offer=c.Offer,Index=best.Index,Id=best.Id,Name=best.Name,Before=(c.Owned or{})[best.Id]or 0,Deadline=now+6}
+        api.LastChoice=best;api.LastRanking=ranking;api.Requests+=1
+        record("Selection",{Choice=best,Ranking=ranking,Offer=c.Offer})
+        local ok,err=pcall(options.Submit,best.Index,c)
+        if not ok then record("Error",tostring(err));pending=nil;api.Stop();api.Status="Perk selection failed: "..tostring(err);return end
+        if pending then api.Status="Selected "..best.Name.." — waiting for server confirmation"end
+    end
+    return api
+end
+
+local function createLiveAutoPerks(MagnetUpgrades)
+    local P=game:GetService("Players").LocalPlayer
+    local H=game:GetService("HttpService")
+    local M=game:GetService("ReplicatedStorage").MTG
+    local C=P.PlayerScripts.MTGClient
+    local S=require(C.State)
+    local Cards=require(C.PerkCards)
+    local E=require(M.Config.Endless)
+    local Stats=require(M.Modules.Stats)
+    local Tools=require(C.Tools)
+    local ranker=createGeodePerkRanker()
+    local events={};local dirty=false;local ownedRaw;local owned={}
+    local lastDepth;local depthAt=os.clock();local depthSeconds=60
+    local function context()
+        local raw=P:GetAttribute("Perks")or"{}"
+        if raw~=ownedRaw then
+            ownedRaw=raw
+            local ok,data=pcall(H.JSONDecode,H,raw);owned=ok and type(data)=="table"and data or {}
+        end
+        local depth=S.run("Depth",1)
+        if lastDepth and lastDepth~=depth then depthSeconds=math.clamp(os.clock()-depthAt,1,180);depthAt=os.clock()end
+        lastDepth=depth
+        local ctx=S.ctx();local tool=Stats.tool(ctx,"Magnet")
+        local plus=table.clone(ctx);plus.Mods=table.clone(ctx.Mods or{});plus.Mods.Power=(plus.Mods.Power or 0)+100
+        local power=Stats.crackPower(ctx);local delta=Stats.crackPower(plus)-power
+        local state=Cards._debug and Cards._debug.P
+        local offer=state and state.Offer
+        return {Endless=S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true,ToolOwned=S.set("Tools").Magnet==true,
+            Ready=state and state.Open and state.Ready and not state.Picked,
+            Offer=offer and offer.Offer,Key=offer and offer.Offer~=nil and(game.JobId..":"..tostring(S.run("RunStart"))..":"..tostring(offer.Offer)..":"..tostring(state.Token)),
+            Test=offer and offer.Test,Cards=offer and offer.Cards,Until=offer and tonumber(offer.Until),ServerNow=workspace:GetServerTimeNow(),
+            Owned=owned,Mods=ctx.Mods,Depth=depth,OilLeft=tonumber(S.run("LanternLeft",0))or 0,OilMax=E.Lantern.Max,
+            LanternRate=tonumber(S.run("LanternRate",1))or 1,OilPerDepth=(owned.OilFlask or 0)*15,DepthSeconds=depthSeconds,
+            BagCapacity=P:GetAttribute("BagCap"),NativeCooldown=tool.Cooldown*Tools.paceMult("Magnet"),RequestFloor=.05,
+            CrackPowerPercent=delta>0 and power*100/delta or 100,MagnetMaxed=MagnetUpgrades.IsMaxed()}
+    end
+    local function choose(cards,c)return ranker.Choose(cards,E.PerkById,c,function(def,rarity)return E.cardStacks(def,rarity)end)end
+    local api=createAutoPerkController({Now=os.clock,Context=context,Choose=choose,Submit=function(index,c)
+        -- Native _pick checks readiness, sends Pick with the offer token, and
+        -- handles the card animation/input cleanup. No reroll action is sent.
+        local current=context()
+        assert(current.Ready and current.Key==c.Key,"Perk offer changed before selection")
+        Cards._pick(index,false)
+    end,Record=function(kind,data)
+        events[#events+1]={Kind=kind,At=os.time(),Data=data};if #events>100 then table.remove(events,1)end;dirty=true
+    end})
+    local connection=M.Remotes.Endless.OnClientEvent:Connect(function(message)
+        if type(message)=="table"and message.Type=="Picked"then api.Confirm(message)end
+    end)
+    function api.Export()
+        return pcall(function()
+            local c=context();local all={}
+            for _,def in ipairs(E.Perks)do all[#all+1]={Id=def.Id,Rarity=def.Rarity}end
+            local _,ranking=choose(all,c)
+            if not isfolder("Geode")then makefolder("Geode")end
+            writefile("Geode/auto_perk_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,Requests=api.Requests,Confirmed=api.Confirmed,
+                LastChoice=api.LastChoice,LastOfferRanking=api.LastRanking,DefaultRarityRanking=ranking,
+                Context={Depth=c.Depth,OilLeft=c.OilLeft,LanternRate=c.LanternRate,NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
+                    BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods},Events=events,
+                Note="Heuristic GEO-MAG depth-survival ranking. Actual offered rarity/stacks and current caps affect each choice. Skill upgrades are low priority because Auto Endless does not activate abilities. No rerolls."}))
+            dirty=false
+        end)
+    end
+    local unload=api.Unload
+    function api.Unload()unload();connection:Disconnect();api.Export()end
+    task.spawn(function()
+        local nextSave=0
+        while api.Running do
+            local ok,err=pcall(api.Tick)
+            if not ok then api.Stop();api.Status="Perk error: "..tostring(err)end
+            if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
+            task.wait(.25)
+        end
+    end)
+    return api
+end
+
+local AutoPerks=createLiveAutoPerks(MagnetUpgrades)
 local function createGeodeTeleportContinuation(options)
     local api={Enabled=true,Running=true,Installed=false}
     function api.Save()
@@ -1525,12 +1749,13 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.6.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless}
+local Hub={Running=true,Version="1.7.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    AutoPerks.Unload()
     Endless.Unload()
     Escape.Unload()
     if Hub.Teleport then Hub.Teleport.Stop()end
@@ -1552,6 +1777,14 @@ local endlessToggle=main:Toggle({Title="Auto Endless Mode",Value=false,Callback=
 end})
 local hoverHeight=main:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
 local endlessStatus=main:Paragraph({Title="Endless Status",Desc="Paused — manages pickup, camp visits, upgrades and boss weak points in Endless mode."})
+local perkToggle=main:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
+    if value then AutoPerks.Start()else AutoPerks.Stop()end
+end})
+local perkStatus=main:Paragraph({Title="Perk Selection Status",Desc="Prioritises GEO-MAG depth survival, emergency oil and effective damage/radius. Accounts for speed caps and card rarity. No automatic rerolls."})
+main:Button({Title="Export Perk Ranking & Diagnostics",Callback=function()
+    local ok,err=AutoPerks.Export()
+    NativeUI:Notify({Title="Perk Ranking",Content=ok and"Saved Geode/auto_perk_diagnostics.json"or tostring(err)})
+end})
 main:Button({Title="Export Endless Diagnostics",Callback=function()
     local ok,err=Endless.Export()
     NativeUI:Notify({Title="Endless Diagnostics",Content=ok and"Saved to Geode/auto_endless_diagnostics.json"or tostring(err)})
@@ -1613,6 +1846,7 @@ config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
+config:Register("AutoSelectPerk",perkToggle)
 settings:Button({Title="Save Config",Callback=function()
     local result,err=config:Save()
     NativeUI:Notify({Title="Config",Content=result and"Saved default config"or("Save failed: "..tostring(err))})
@@ -1631,7 +1865,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -1650,6 +1884,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
     escapeToggle:Set(resumed.Escape==true)
     endlessToggle:Set(resumed.Endless==true)
+    perkToggle:Set(resumed.AutoPerks==true)
     if resumed.MenuClosed then Window:Close()end
 end
 continuation.Save()
@@ -1659,6 +1894,8 @@ NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous op
 task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
+        if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
+        perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
