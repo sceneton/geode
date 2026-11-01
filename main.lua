@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.5.0"
+local geodeVersion="1.5.1"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1076,7 +1076,12 @@ local function createLiveMagnetUpgrades(CrackSell)
     task.spawn(function()
         local nextSave=0
         while api.Running do
-            local ok,err=pcall(api.Tick)
+            local ok,err=pcall(function()
+                if CrackSell.Enabled and api.IsMaxed()then
+                    CrackSell.Stop("Both GEO-MAG upgrades are maxed — auto crack and sell disabled")
+                end
+                api.Tick()
+            end)
             if not ok then api.Stop("Upgrade loop error: "..tostring(err))end
             if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
             task.wait(.1)
@@ -1116,7 +1121,7 @@ local function createLiveEscape(CrackSell)
     local player=game:GetService("Players").LocalPlayer
     local State=require(player.PlayerScripts.MTGClient.State)
     local exit=Vector3.new(702.1797485351562,3.2499985694885254,80.727294921875)
-    return createEscapeController({Now=os.clock,Context=function()
+    local api=createEscapeController({Now=os.clock,Context=function()
         local character=player.Character
         local root=character and character:FindFirstChild("HumanoidRootPart")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
@@ -1133,6 +1138,14 @@ local function createLiveEscape(CrackSell)
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
     end})
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(api.Tick)
+            if not ok then api.Stop();api.Status="Escape error: "..tostring(err);warn("[Geode Escape] "..tostring(err))end
+            task.wait(.25)
+        end
+    end)
+    return api
 end
 
 local Escape=createLiveEscape(CrackSell)
@@ -1235,7 +1248,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.5.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape}
+local Hub={Running=true,Version="1.5.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -1353,12 +1366,7 @@ retireGeodeMenus(Window.Gui)
 NativeUI:Notify({Title="Geode Hub",Content=type(resumed)=="table"and"Previous options restored after teleport."or(loaded and"Default config restored. Right Ctrl opens or closes the menu."or("Right Ctrl opens or closes the menu. "..tostring(loadError)))})
 task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
-        if CrackSell.Enabled and MagnetUpgrades.IsMaxed()then
-            CrackSell.Stop("Both GEO-MAG upgrades are maxed — auto crack and sell disabled")
-            continuation.Save()
-        end
-        local escapeOK,escapeError=pcall(Escape.Tick)
-        if not escapeOK then Escape.Stop();Escape.Status="Escape error: "..tostring(escapeError)end
+        local uiOK,uiError=pcall(function()
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
@@ -1377,6 +1385,8 @@ task.spawn(function()
             Pickup.Status or"Paused",Pickup.MaxRange,Pickup.Requests,Pickup.Feedback,Pickup.Items,
             tostring(player:GetAttribute("BagCount")or 0),(player:GetAttribute("BagCap")==-1 and"Unlimited"or tostring(player:GetAttribute("BagCap")or"—"))))
         session:SetDesc("Role: "..tostring(mtg and mtg:GetAttribute("Role")or"Loading").." | Phase: "..tostring(state and state:GetAttribute("Phase")or"Lobby").."\nVersion "..Hub.Version.." | Teleport queue: "..(not continuation.Enabled and"Off"or(continuation.Installed and"Ready"or"Unavailable")))
+        end)
+        if not uiOK then warn("[Geode UI] Status update failed: "..tostring(uiError))end
         task.wait(0.5)
     end
     if Hub.Running then Hub.Unload()end
