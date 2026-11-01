@@ -41,5 +41,6 @@ if not compiled then warn("[Geode Hub] No valid online, cached or backup hub. On
 print("[Geode Hub] Loading "..origin.." source ("..#source.." bytes)")
 local ok,result=pcall(compiled)
 if not ok then warn("[Geode Hub] Startup failed: "..tostring(result));return end
-if type(result)~="table"or result.Running~=true then warn("[Geode Hub] Startup returned without a running hub; check module-load messages.")end
+if type(result)~="table"or(result.Running~=true and result.Pending~=true)then warn("[Geode Hub] Startup returned without a running hub; check module-load messages.")end
 return result
+
