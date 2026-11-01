@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.7.0"
+local geodeVersion="1.7.1"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1749,7 +1749,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.7.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.7.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -1769,23 +1769,24 @@ end
 stop.OnInvoke=Hub.Unload
 local overview=Window:Section({Title="Overview"})
 local main=overview:Tab({Title="Main"})
+local endlessTab=overview:Tab({Title="Endless"})
 local eggs=overview:Tab({Title="Eggs"})
 local settings=overview:Tab({Title="Configs & Settings"})
-main:Section({Title="Endless Farming"})
-local endlessToggle=main:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
+endlessTab:Section({Title="Endless Farming"})
+local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
     if value then Endless.Start()else Endless.Stop()end
 end})
-local hoverHeight=main:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
-local endlessStatus=main:Paragraph({Title="Endless Status",Desc="Paused — manages pickup, camp visits, upgrades and boss weak points in Endless mode."})
-local perkToggle=main:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
+local hoverHeight=endlessTab:Slider({Title="Endless Hover Clearance (studs)",Step=.5,Value={Min=2,Max=20,Default=6.5},Callback=function(value)Endless.SetHover(value)end})
+local endlessStatus=endlessTab:Paragraph({Title="Endless Status",Desc="Paused — manages pickup, camp visits, upgrades and boss weak points in Endless mode."})
+local perkToggle=endlessTab:Toggle({Title="Auto Select Perk",Value=false,Callback=function(value)
     if value then AutoPerks.Start()else AutoPerks.Stop()end
 end})
-local perkStatus=main:Paragraph({Title="Perk Selection Status",Desc="Prioritises GEO-MAG depth survival, emergency oil and effective damage/radius. Accounts for speed caps and card rarity. No automatic rerolls."})
-main:Button({Title="Export Perk Ranking & Diagnostics",Callback=function()
+local perkStatus=endlessTab:Paragraph({Title="Perk Selection Status",Desc="Prioritises GEO-MAG depth survival, emergency oil and effective damage/radius. Accounts for speed caps and card rarity. No automatic rerolls."})
+endlessTab:Button({Title="Export Perk Ranking & Diagnostics",Callback=function()
     local ok,err=AutoPerks.Export()
     NativeUI:Notify({Title="Perk Ranking",Content=ok and"Saved Geode/auto_perk_diagnostics.json"or tostring(err)})
 end})
-main:Button({Title="Export Endless Diagnostics",Callback=function()
+endlessTab:Button({Title="Export Endless Diagnostics",Callback=function()
     local ok,err=Endless.Export()
     NativeUI:Notify({Title="Endless Diagnostics",Content=ok and"Saved to Geode/auto_endless_diagnostics.json"or tostring(err)})
 end})
