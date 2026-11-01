@@ -23,13 +23,15 @@ loadstring(readfile("GeodeHub/loader.lua"))()
 - **Auto Geode Pickup:** selects valid nearby mound targets, uses the equipped owned tool, respects its calculated cooldown and a configurable range up to 26 studs. Pet feedback is excluded from tool confirmation counts.
 - **Auto Crack and Sell:** starts a fixed 10-second window after the first bag-count change. Later pickups do not restart it. It suspends collection, deposits, enters a free station, uses Crack All, leaves, sells, and returns to the original pickup position. A fresh bag change starts the next window.
 - **Auto Upgrade GEO-MAG 3000:** buys only Pull Power and Pulse Speed with run cash, checks affordability and replicated levels, and waits during camp cycles.
+- **Upgrade completion:** Auto Crack and Sell turns off once the owned GEO-MAG has both upgrade tracks at their replicated maximum levels. This also works when Auto Upgrade is off.
+- **Auto Escape:** waits for Escape phase and LiftOpen, then moves to the saved exit at `(702.1797, 3.25, 80.7273)`. It preserves facing direction, stops camp movement first, waits for the server's Escaped flag, and retries only if displaced (up to ten moves per character/round). The toggle saves to config and teleport continuation.
 - **Auto Open Haunted Egg:** opens three per request, using the current candy price (180 at inspection). Requests are sequential; Busy replies back off. It waits for sufficient candy and stops on event expiry or other errors.
 - **Queue on Teleport:** reloads this hub after real Roblox teleports, with cached fallback and recent enabled settings.
 - Save/Load config, diagnostics export, and Unload.
 
 Crack All uses an existing pass or stored credits. The hub does not buy passes, credits, candy packs or Robux products. Closing the menu keeps enabled features running; Unload stops them and disables its teleport continuation.
 
-**Full Auto Farm Wins is not implemented yet.** Boss combat, win confirmation and replay still require integration/testing. The current pickup maximum is 26 studs, even though the magnet's native client can calculate a longer reach.
+**Full Auto Farm Wins is not implemented yet.** Boss combat and replay still require integration/testing. Auto Escape's exit movement still needs confirmation during a live boss-defeat transition. The current pickup maximum is 26 studs, even though the magnet's native client can calculate a longer reach.
 
 ## Loader and cache recovery
 
