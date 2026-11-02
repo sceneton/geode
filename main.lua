@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.8.5"
+local geodeVersion="1.9.0"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1280,6 +1280,46 @@ local function createNativeHeldFire(options)
     return api
 end
 
+-- Native skill activation with replicated confirmation and cooldown backoff.
+local function createEndlessAbilityController(options)
+    local api={Requests=0,Confirmed=0,Available=false,Status="Waiting for Auto Endless"}
+    local pending;local readyAt=0;local retryAt=0
+    local function record(kind,data)if options.Record then options.Record(kind,data)end end
+    function api.Tick(enabled)
+        if not enabled and not pending then return end
+        local c=options.Context();local now=options.Now()
+        api.Available=c.Unlocked==true;api.Stats=c.Stats
+        local buffActive=c.BuffId==c.SkillId and(c.BuffUntil or 0)>now
+        if buffActive and c.Stats then
+            -- Covers skills activated manually with Q, as well as our own casts.
+            readyAt=math.max(readyAt,c.ReadyAt or 0,c.BuffUntil+(c.Stats.Cooldown or 45)-(c.Stats.Duration or 5))
+        end
+        if pending then
+            if(c.ReadyAt or 0)>pending.BeforeReady+.01 or(buffActive and c.BuffUntil>pending.BeforeBuff+.01)then
+                api.Confirmed+=1
+                readyAt=math.max(readyAt,(c.ReadyAt or 0)>pending.At and c.ReadyAt or pending.At+pending.Cooldown)
+                record("AbilityConfirmed",{Skill=c.SkillId,ReadyAt=readyAt});pending=nil
+            elseif now>=pending.Deadline then
+                record("AbilityUnconfirmed",{Skill=c.SkillId});pending=nil;retryAt=now+5
+                api.Status="Activation unconfirmed — backing off"
+            end
+        end
+        if not enabled then api.Status="Auto ability paused";return end
+        if not c.Unlocked then api.Status="GEO-MAG ability not unlocked";return end
+        if not c.Allowed then api.Status="Ability waits for active mining";return end
+        if pending then api.Status="Waiting for Overcharge confirmation";return end
+        if buffActive then api.Status="Overcharge active";return end
+        local remaining=math.max(readyAt,c.ReadyAt or 0,retryAt)-now
+        if remaining>0 then api.Status=string.format("Overcharge ready in %.1f s",remaining);return end
+        pending={At=now,BeforeReady=c.ReadyAt or 0,BeforeBuff=c.BuffUntil or 0,Cooldown=c.Stats.Cooldown,Deadline=now+5}
+        api.Requests+=1;record("AbilityRequested",{Skill=c.SkillId,Cooldown=c.Stats.Cooldown})
+        local ok,err=pcall(options.Activate)
+        if not ok then pending=nil;retryAt=now+5;api.Status="Ability error: "..tostring(err);record("AbilityError",tostring(err))
+        else api.Status="Waiting for Overcharge confirmation"end
+    end
+    return api
+end
+
 local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
@@ -1295,6 +1335,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local HUD=require(C.RunHUD)
     local Bench=require(C.Bench)
     local UIKit=require(C.UIKit)
+    local Mastery=require(C.Mastery)
+    local MasteryHUD=require(C.MasteryHUD)
     local held
     held=createNativeHeldFire({Now=os.clock,SetUse=function(value,source)Tools.setUse(value,source)end,
         Suppress=function(value)
@@ -1310,6 +1352,17 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         events[#events+1]={Kind=kind,At=os.time(),Depth=S.run("Depth"),Data=data}
         if #events>100 then table.remove(events,1)end
     end
+    local ability=createEndlessAbilityController({Now=function()return workspace:GetServerTimeNow()end,Context=function()
+        local stats=Mastery.skillStats("Magnet")
+        local buff,remaining=Mastery.buff()
+        local now=workspace:GetServerTimeNow()
+        return {Stats=stats,SkillId=stats and stats.Id,Unlocked=stats~=nil and Mastery.level("Tool:Magnet")>=Mastery.SkillLevel,
+            ReadyAt=Mastery.skillReadyAt("Magnet"),BuffId=buff,BuffUntil=buff and now+remaining or 0,
+            Allowed=api and api.Enabled and api.Stage=="Mining"and api.NativeHeldActive and S.role()=="Game"and S.run("Mode")=="Endless"
+                and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and HUD.equipped()=="Magnet"
+                and not CrackSell.Busy and not Bench.isCracking()and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true
+                and not Tools.Blocked and not Tools.DevPaused}
+    end,Activate=function()MasteryHUD.useSkill()end,Record=record})
     local function release()
         held.ReleaseFire()
         target=nil;focus=nil
@@ -1430,6 +1483,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
+                AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/12,OrbitLapSeconds=12,Events=events}))
         end)
     end
@@ -1491,6 +1545,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                     autoRotate=ownedHumanoid and ownedHumanoid.AutoRotate
                 end
                 api.Tick()
+                ability.Tick(api.Enabled)
+                api.AbilityAvailable=ability.Available;api.AbilityStats=ability.Stats;api.AbilityStatus=ability.Status
+                api.AbilityRequests=ability.Requests;api.AbilityConfirmed=ability.Confirmed
             end)
             if not ok then api.Stop();api.Status="Endless error: "..tostring(err);record("Error",tostring(err))end
             task.wait(.125)
@@ -1546,7 +1603,12 @@ local function createGeodePerkRanker()
             score,reason=oil>0 and 20+oil/20 or 0,"One-time oil refill"
             if(c.OilLeft or 600)/math.max(.1,c.LanternRate or 1)<60 and oil>0 then score,reason=220+oil/10,"Emergency oil: less than a minute of burn time remains"end
         elseif id=="LastStand"then score,reason=33,"Conditional low-oil damage bonus; avoid deliberately running out of oil"
-        elseif def.NeedsSkill then score,reason=0,"Current Auto Endless does not activate tool abilities"
+        elseif def.NeedsSkill then
+            if c.AbilitiesActive then
+                score=({AbilityDuration=75,AbilityCooldown=73,AbilitySize=68,AbilityDamage=65})[id]or 55
+                reason="Improves automatic Overcharge during mining"
+                if id=="AbilityCooldown"and c.AbilityStats and c.AbilityStats.Cooldown<=15.75 then score,reason=0,"Overcharge cooldown has reached its configured minimum"end
+            else score,reason=0,"Automatic Overcharge is unavailable or disabled"end
         end
         if bonus.PileDamage then
             local gain=bonus.PileDamage*stacks/math.max(10,100+(mods.PileDamage or 0))
@@ -1681,6 +1743,7 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
             LanternRate=tonumber(S.run("LanternRate",1))or 1,OilPerDepth=(owned.OilFlask or 0)*15,DepthSeconds=depthSeconds,
             BagCapacity=P:GetAttribute("BagCap"),NativeCooldown=tool.Cooldown*Tools.paceMult("Magnet"),
             RequestFloor=Endless and Endless.Enabled and S.run("Mode")=="Endless"and math.clamp(Endless.FrameInterval or 1/60,.001,.1)or .05,
+            AbilitiesActive=Endless and Endless.Enabled and Endless.AbilityAvailable,AbilityStats=Endless and Endless.AbilityStats,
             CrackPowerPercent=delta>0 and power*100/delta or 100,MagnetMaxed=MagnetUpgrades.IsMaxed()}
     end
     local function choose(cards,c)return ranker.Choose(cards,E.PerkById,c,function(def,rarity)return E.cardStacks(def,rarity)end)end
@@ -1705,8 +1768,8 @@ local function createLiveAutoPerks(MagnetUpgrades,Endless)
             writefile("Geode/auto_perk_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Status=api.Status,Requests=api.Requests,Confirmed=api.Confirmed,
                 LastChoice=api.LastChoice,LastOfferRanking=api.LastRanking,DefaultRarityRanking=ranking,
                 Context={Depth=c.Depth,OilLeft=c.OilLeft,LanternRate=c.LanternRate,NativeCooldown=c.NativeCooldown,RequestFloor=c.RequestFloor,
-                    BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods},Events=events,
-                Note="Heuristic GEO-MAG depth-survival ranking. Actual offered rarity/stacks and current caps affect each choice. Skill upgrades are low priority because Auto Endless does not activate abilities. No rerolls."}))
+                    BagCapacity=c.BagCapacity,MagnetMaxed=c.MagnetMaxed,CrackPowerPercent=c.CrackPowerPercent,OilPerDepth=c.OilPerDepth,DepthSeconds=c.DepthSeconds,Owned=c.Owned,Mods=c.Mods,AbilitiesActive=c.AbilitiesActive,AbilityStats=c.AbilityStats},Events=events,
+                Note="Heuristic GEO-MAG depth-survival ranking. Actual offered rarity/stacks, current caps and automatic Overcharge availability affect each choice. No rerolls."}))
             dirty=false
         end)
     end
@@ -1824,7 +1887,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.8.5",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -1973,7 +2036,7 @@ task.spawn(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
