@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.1"
+local geodeVersion="1.9.2"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1234,6 +1234,7 @@ local function createPileRingPlanner()
             end end
             local smooth={}
             for s=1,sectors do smooth[s]=math.clamp((profile[(s-2)%sectors+1]+profile[s]*2+profile[s%sectors+1])/4,3,60)end
+            if options.Circular then for s=1,sectors do smooth[s]=math.clamp(overall,3,60)end end
             bands[#bands+1]={Name=({"Base","Lower slope","Middle","Upper slope","Crown"})[index]or("Ring "..index),
                 Y=y,Radius=math.clamp(overall,3,60),Radii=smooth,Columns=#radii}
         end
@@ -1343,7 +1344,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if value then Pickup.NativeHeldOwner=held
             elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
         end})
-    local target,focus,ownedCharacter,ownedHumanoid,autoRotate
+    local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
+    local groundAim;local nextGroundAim=0
+    local groundOverlap=OverlapParams.new();groundOverlap.FilterType=Enum.RaycastFilterType.Include;groundOverlap.MaxParts=256
+    local groundRays=RaycastParams.new();groundRays.FilterType=Enum.RaycastFilterType.Include
     local collision={};local savedCamera;local previous
     local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     local nextHit=0;local nextEquip=0
@@ -1366,6 +1370,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local function release()
         held.ReleaseFire()
         target=nil;focus=nil
+        groundAim=nil;cameraOutward=nil;movementStage=nil
         for part,value in pairs(collision)do if part.Parent then part.CanCollide=value end end
         collision={}
         if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid.AutoRotate=autoRotate end
@@ -1387,12 +1392,47 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         end
         local columns={}
         for col=1,Grid.N do
-            local count=Render.height(col)
+            local count=Grid.Max[col]or 0
             if count>0 then columns[#columns+1]={X=origin.X+Grid.X[col],Z=origin.Z+Grid.Z[col],Base=origin.Y+Grid.Base[col],
                 Top=origin.Y+Grid.topY(col,count),Count=count}end
         end
-        local fitted=ringPlanner.Build(columns,profileCenter,{Fractions={.12}})
+        local fitted=ringPlanner.Build(columns,profileCenter,{Fractions={.12},Circular=true})
         if fitted and #fitted.Bands>0 then return fitted end
+    end
+    local function findGroundAim()
+        if not plan or not target or not cameraOutward or not Render.Folder then return nil end
+        local stats=require(MTG.Modules.Stats).tool(S.ctx(),"Magnet")
+        local reach=math.min(90,Game.Collect.Reach+stats.Radius*1.6*Tools.radiusMult("Magnet"))
+        local inward=-cameraOutward
+        local origin=Render.origin();if not origin then return nil end
+        local center=Vector3.new(target.X,origin.Y+2,target.Z)+inward*(reach*.5)
+        groundOverlap.FilterDescendantsInstances={Render.Folder}
+        local parts=workspace:GetPartBoundsInBox(CFrame.lookAt(center,center+inward),Vector3.new(18,6,reach),groundOverlap)
+        local cameraPosition=target+cameraOutward*3+Vector3.new(0,2,0)
+        local candidates={}
+        for _,part in ipairs(parts)do
+            if part.Transparency<1 and part.CanQuery and part.Position.Y<=origin.Y+4 then
+                local col,id=Render.target(part)
+                local delta=part.Position-target
+                local horizontal=Vector3.new(delta.X,0,delta.Z)
+                if col~=nil and id~=nil and delta.Magnitude<=reach and horizontal.Magnitude>.01 then
+                    local alignment=horizontal.Unit:Dot(inward)
+                    if alignment>.65 then candidates[#candidates+1]={Part=part,Col=col,Id=id,Score=(1-alignment)*50+delta.Magnitude*.08+(part.Position.Y-origin.Y)*.5}end
+                end
+            end
+        end
+        table.sort(candidates,function(a,b)return a.Score<b.Score end)
+        local include={Render.Folder};local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
+        if body then include[#include+1]=body end
+        groundRays.FilterDescendantsInstances=include
+        for i=1,math.min(12,#candidates)do
+            local candidate=candidates[i]
+            local hit=workspace:Raycast(cameraPosition,(candidate.Part.Position-cameraPosition)*1.03,groundRays)
+            if hit and hit.Position.Y<=origin.Y+4.5 then
+                local col,id=Render.target(hit.Instance)
+                if col~=nil and id~=nil then return {Part=hit.Instance,Col=col,Id=id}end
+            end
+        end
     end
     api=createEndlessController({Context=function()
         local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
@@ -1421,21 +1461,26 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
-            if c.Depth~=planDepth then plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;band=1;angle=0;nextPlan=0 end
-            -- Freeze the contour and height for the entire lap. Refit and move
-            -- to the next ring only after Heartbeat has completed all 360 degrees.
-            if pendingBand or(not plan and now>=nextPlan)then
-                plan=buildPlan();nextPlan=now+1
-                if plan then band=((pendingBand or band)-1)%#plan.Bands+1 end
-                pendingBand=nil
+            if c.Depth~=planDepth then plan=nil;profileCenter=nil;pendingBand=nil;groundAim=nil;planDepth=c.Depth;band=1;nextPlan=now+.2 end
+            -- Full generated geometry pins one circular path for the whole depth.
+            -- Depleted sectors cannot pull the radius/height inward or reset angle.
+            if not plan and now>=nextPlan then plan=buildPlan();nextPlan=now+1 end
+            if pendingBand then band=1;pendingBand=nil end
+            if not plan then
+                if movementStage~="Mining"then release()end
+                self.Status="Waiting for mound geometry";return
             end
-            if not plan then release();self.Status="Waiting for remaining mound targets";return end
             band=(band-1)%#plan.Bands+1
             self.RingCount=#plan.Bands;self.RingName=plan.Bands[band].Name
-            local b=plan.Bands[band];local radius=ringPlanner.RadiusAt(b,angle)+4
-            local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-            target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
-            focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
+            -- Heartbeat is the sole writer of mining position/focus. Seed only
+            -- while entering mining so the held-fire gate has a valid target.
+            if movementStage~="Mining"or not target then
+                local b=plan.Bands[band];local radius=b.Radius+4;local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+                target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
+                focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
+                cameraOutward=radial
+            end
+            if now>=nextGroundAim and not UIKit.cursorFree()then nextGroundAim=now+.25;groundAim=findGroundAim()end
         else
             held.ReleaseFire()
             if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
@@ -1470,9 +1515,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         stop()
         if not ok then record("NativeReleaseError",tostring(err))end
     end
-    api.NativeFireEvents=0;api.NativeItems=0;api.FrameInterval=1/60
+    api.NativeFireEvents=0;api.NativeItems=0;api.GroundFireEvents=0;api.FrameInterval=1/60
     local nativeFired=Tools.Fired.Event:Connect(function(tool)
-        if held.Active and tool=="Magnet"then api.NativeFireEvents+=1 end
+        if held.Active and tool=="Magnet"then
+            api.NativeFireEvents+=1
+            if api.AimMode=="Ground geodes"then api.GroundFireEvents+=1 end
+        end
     end)
     local nativeFeedback=MTG.Remotes.Pick.OnClientEvent:Connect(function(id,tool,packed)
         if held.Active and id==P.UserId and tool=="Magnet"and typeof(packed)=="buffer"then api.NativeItems+=math.floor(buffer.len(packed)/5)end
@@ -1484,7 +1532,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
-                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,Events=events}))
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,
+                CircularOrbit=true,AimMode=api.AimMode,GroundFireEvents=api.GroundFireEvents,GroundAim=groundAim and{Column=groundAim.Col,Id=groundAim.Id},Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
@@ -1493,7 +1542,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
             local owner=api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
             local allowed=owner and api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true
-                and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
+                and plan~=nil and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
                 and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
@@ -1506,15 +1555,21 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
-                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=ringPlanner.RadiusAt(b,angle)+4
+                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=b.Radius+4
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
+                cameraOutward=radial
             end
             for _,part in ipairs(char:GetChildren())do if part:IsA("BasePart")then if collision[part]==nil then collision[part]=part.CanCollide end;part.CanCollide=false end end
             hum.AutoRotate=false
-            root.CFrame=CFrame.lookAt(target,focus)
+            local facing=focus
+            if api.Stage=="Mining"then
+                facing=plan and Vector3.new(plan.Origin.X,target.Y,plan.Origin.Z)or(target+Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z))
+            end
+            root.CFrame=CFrame.lookAt(target,facing)
+            movementStage=api.Stage
             root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
-            if api.Stage=="Mining"and not pendingBand then
+            if api.Stage=="Mining"and plan and not pendingBand then
                 angle+=math.min(dt,.1)*(math.pi*2/14)
                 if angle>=math.pi*2 then
                     angle=0;api.Laps+=1;pendingBand=band+1
@@ -1529,10 +1584,18 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         if not api.Enabled or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject}end
-        local direction=(target-focus).Unit
+        local direction=api.Stage=="Mining"and cameraOutward or(target-focus).Unit
+        if not direction then return end
+        local cameraPosition=target+direction*3+Vector3.new(0,2,0)
         cam.CameraType=Enum.CameraType.Scriptable
-        cam.CFrame=CFrame.lookAt(target+direction*3+Vector3.new(0,2,0),focus)
-        if api.Stage=="Mining"then cam.CFrame=cam.CFrame*CFrame.Angles(math.rad(10),0,0)end
+        local aim=focus;local trackingGround=false
+        if api.Stage=="Mining"and groundAim and groundAim.Part.Parent then
+            local col,id=Render.target(groundAim.Part)
+            if col==groundAim.Col and id==groundAim.Id then aim=groundAim.Part.Position;trackingGround=true end
+        end
+        cam.CFrame=CFrame.lookAt(cameraPosition,aim)
+        if api.Stage=="Mining"and not trackingGround then cam.CFrame=cam.CFrame*CFrame.Angles(math.rad(10),0,0)end
+        api.AimMode=trackingGround and"Ground geodes"or"Default"
     end)
     local unload=api.Unload
     function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
@@ -1887,7 +1950,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.2",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
