@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.2"
+local geodeVersion="1.10.3"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -73,6 +73,25 @@ end
 local success,result=pcall(function()
 local geodeScripts=geodePlayer:WaitForChild("PlayerScripts",15)
 assert(geodeScripts and geodeScripts:WaitForChild("MTGClient",15),"Game client did not load")
+local function createGeodeCursorController(options)
+    local api={Running=true};local owned=false;local wasOpen=false
+    function api.Tick()
+        if not api.Running then return end
+        local open=options.IsOpen()
+        if owned~=open then options.SetOwner(open);owned=open end
+        if open or options.NativeFree()then options.SetMouse("Default",true)
+        elseif options.ShouldLock()then options.SetMouse("LockCenter",false)
+        elseif wasOpen then options.SetMouse("Default",true)end
+        wasOpen=open
+    end
+    function api.Destroy()
+        if not api.Running then return end
+        api.Running=false
+        if owned then options.SetOwner(false);owned=false end
+    end
+    return api
+end
+
 -- Beyy native UI. Embedded into each module; no remote UI dependency.
 local function createNativeUI()
     local UI = {}
@@ -205,31 +224,35 @@ local function createNativeUI()
         local sidebar=node("ScrollingFrame",root,{Position=UDim2.fromOffset(0,34),Size=UDim2.new(0,180,1,-72),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=4,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
         layout(sidebar)
         w.Notice=label(root,"",32); w.Notice.Position=UDim2.new(0,10,1,-34); w.Notice.Size=UDim2.new(1,-20,0,32)
-        local bind="GeodeNativeCursor_"..tostring(game:GetService("Players").LocalPlayer.UserId)
-        local previousBehavior,previousIcon,cursorBound
-        local function releaseCursor()
-            if cursorBound then return end
-            previousBehavior,previousIcon=input.MouseBehavior,input.MouseIconEnabled
-            cursorBound=true
-            run:BindToRenderStep(bind,Enum.RenderPriority.Last.Value+100,function()
-                input.MouseBehavior=Enum.MouseBehavior.Default; input.MouseIconEnabled=true
-            end)
-        end
-        local function restoreCursor()
-            if not cursorBound then return end
-            run:UnbindFromRenderStep(bind); cursorBound=false
-            input.MouseBehavior=previousBehavior; input.MouseIconEnabled=previousIcon
-        end
-        function w:Open() if self.Destroyed then return end; self.Closed=false; gui.Enabled=true; releaseCursor() end
-        function w:Close() self.Closed=true; gui.Enabled=false; self.Capture=nil; dragInput=nil; restoreCursor() end
-        function w:SetToggleKey(key) self.ToggleKey=typeof(key)=="EnumItem" and key or Enum.KeyCode[tostring(key)] or Enum.KeyCode.RightControl end
-        function w:EditOpenButton() end
+        local cursorPlayer=game:GetService("Players").LocalPlayer
+        local gameCursor=require(cursorPlayer.PlayerScripts.MTGClient.UIKit)
+        local bind="GeodeNativeCursor_"..game:GetService("HttpService"):GenerateGUID(false)
+        local cursorController=createGeodeCursorController({IsOpen=function()return not w.Destroyed and gui.Enabled and root.Visible end,
+            SetOwner=function(value)gameCursor.cursor(bind,value)end,NativeFree=gameCursor.cursorFree,
+            ShouldLock=function()
+                local camera=workspace.CurrentCamera
+                local mtg=game:GetService("ReplicatedStorage"):FindFirstChild("MTG")
+                return cursorPlayer.CameraMode==Enum.CameraMode.LockFirstPerson
+                    or(camera and camera.CameraType==Enum.CameraType.Scriptable and mtg and mtg:GetAttribute("Role")=="Game")
+            end,SetMouse=function(behavior,icon)
+                local value=Enum.MouseBehavior[behavior]
+                if input.MouseBehavior~=value then input.MouseBehavior=value end
+                if input.MouseIconEnabled~=icon then input.MouseIconEnabled=icon end
+            end})
+        run:BindToRenderStep(bind,Enum.RenderPriority.Last.Value+100,function()cursorController.Tick()end)
+        connect(gui.Destroying,function()w.Destroyed=true;cursorController.Destroy();run:UnbindFromRenderStep(bind)end)
+        connect(gui:GetPropertyChangedSignal("Enabled"),function()w.Closed=not gui.Enabled;cursorController.Tick()end)
+        function w:Open()if self.Destroyed then return end;self.Closed=false;gui.Enabled=true;root.Visible=true;cursorController.Tick()end
+        function w:Close()self.Closed=true;gui.Enabled=false;self.Capture=nil;dragInput=nil;cursorController.Tick()end
+        function w:SetToggleKey(key)self.ToggleKey=typeof(key)=="EnumItem"and key or Enum.KeyCode[tostring(key)]or Enum.KeyCode.RightControl end
+        function w:EditOpenButton()end
         function w:Destroy()
             if self.Destroyed then return end
-            self:Close(); self.Destroyed=true
-            for _,c in ipairs(self.Connections) do c:Disconnect() end
-            table.clear(self.Connections); gui:Destroy()
+            self:Close();self.Destroyed=true;cursorController.Destroy();run:UnbindFromRenderStep(bind)
+            for _,c in ipairs(self.Connections)do c:Disconnect()end
+            table.clear(self.Connections);gui:Destroy()
         end
+
         connect(close.Activated,function() w:Close() end)
         connect(input.InputBegan,function(event,processed)
             if w.Capture and event.UserInputType==Enum.UserInputType.Keyboard and event.KeyCode~=Enum.KeyCode.Unknown then
@@ -2039,7 +2062,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.2",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.3",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
