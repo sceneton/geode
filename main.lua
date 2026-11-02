@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.8"
+local geodeVersion="1.9.9"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1274,11 +1274,13 @@ end
 
 -- Owns only the native button source and an independent direct-pickup gate.
 local function createNativeHeldFire(options)
-    local api={Owned=false,Active=false,Starts=0,Releases=0}
+    local api={Owned=false,Active=false,Starts=0,Releases=0,Recoveries=0}
     local readyAt=0
+    local lastProgress;local progressAt=0
     function api.ReleaseFire()
         if not api.Active then return end
         api.Active=false;api.Releases+=1
+        lastProgress=nil
         options.SetUse(false,"button")
     end
     function api.Stop()
@@ -1296,7 +1298,18 @@ local function createNativeHeldFire(options)
         if not allowed then api.ReleaseFire();return end
         if not api.Active and options.Now()>=readyAt then
             api.Active=true;api.Starts+=1
+            progressAt=options.Now();lastProgress=options.Progress and options.Progress()
             options.SetUse(true,"button")
+        elseif api.Active and options.Progress then
+            local now=options.Now();local progress=options.Progress()
+            if progress~=lastProgress then lastProgress=progress;progressAt=now
+            elseif now-progressAt>=1.5 then
+                -- Native focus/input resets can clear the game's hold while our
+                -- ownership remains active. Reassert only after firing stalls,
+                -- and only through the normal allowed-input guards above.
+                progressAt=now;api.Recoveries+=1
+                options.SetUse(true,"button")
+            end
         end
     end
     return api
@@ -1358,8 +1371,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local UIKit=require(C.UIKit)
     local Mastery=require(C.Mastery)
     local MasteryHUD=require(C.MasteryHUD)
-    local held
+    local held;local api
     held=createNativeHeldFire({Now=os.clock,SetUse=function(value,source)Tools.setUse(value,source)end,
+        Progress=function()return api and(api.NativeFireEvents+api.Hits)or 0 end,
         Suppress=function(value)
             if value then Pickup.NativeHeldOwner=held
             elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
@@ -1369,7 +1383,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local collision={};local savedCamera;local previous
     local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     local nextEquip=0
-    local events={};local api
+    local events={}
     local function record(kind,data)
         events[#events+1]={Kind=kind,At=os.time(),Depth=S.run("Depth"),Data=data}
         if #events>100 then table.remove(events,1)end
@@ -1458,7 +1472,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             -- Heartbeat is the sole writer of mining position/focus. Seed only
             -- while entering mining so the held-fire gate has a valid target.
             if movementStage~="Mining"or not target then
-                local b=plan.Bands[band];local radius=b.Radius+4;local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
+                local b=plan.Bands[band];local radius=b.Radius+1.5;local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
                 target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
@@ -1509,9 +1523,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
-                NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
+                NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
-                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
     end
@@ -1527,6 +1541,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
+            api.NativeFireRecoveries=held.Recoveries
         end)
         if not holdOK then api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
         if CrackSell.Busy or Bench.isCracking()then release();return end
@@ -1536,7 +1551,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
-                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=b.Radius+4
+                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=b.Radius+1.5
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
@@ -1934,7 +1949,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.8",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.9",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
