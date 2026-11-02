@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.14"
+local geodeVersion="1.10.15"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -994,7 +994,7 @@ local function createCrackSellController(options)
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
     function api.SetInterval(value)
         value=tonumber(value)
-        if value and value==value then api.Interval=math.clamp(value,2,60)end
+        if value and value==value then api.Interval=math.clamp(value,1,60)end
     end
     function api.SetContinuous(value)
         api.Continuous=value==true
@@ -2282,7 +2282,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.14",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.15",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2344,7 +2344,7 @@ main:Section({Title="Cracking & Selling"})
 local crackToggle=main:Toggle({Title="Auto Crack and Sell",Value=false,Callback=function(value)
     if value then CrackSell.Start()else CrackSell.Stop()end
 end})
-local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=1,Value={Min=2,Max=60,Default=10},Callback=function(value)
+local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=1,Value={Min=1,Max=60,Default=10},Callback=function(value)
     CrackSell.SetInterval(value)
 end})
 local continuousCrack=main:Toggle({Title="Keep Cracking & Selling",Value=false,Callback=function(value)
