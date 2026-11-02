@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.6"
+local geodeVersion="1.9.7"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -708,7 +708,7 @@ end
 
 local Eggs=createLiveHauntedEggs()
 local function createCrackSellController(options)
-    local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Cycles=0,Sales=0,CashGained=0}
+    local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Continuous=false,Cycles=0,Sales=0,CashGained=0}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local saleBefore=0
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
@@ -746,6 +746,10 @@ local function createCrackSellController(options)
     function api.SetInterval(value)
         value=tonumber(value)
         if value and value==value then api.Interval=math.clamp(value,2,60)end
+    end
+    function api.SetContinuous(value)
+        api.Continuous=value==true
+        if not api.Busy then armedAt=nil end
     end
     function api.Notify(kind)
         if not api.Busy then return end
@@ -785,9 +789,11 @@ local function createCrackSellController(options)
         api.BagChanged(c.BagCount)
         local now=options.Now()
         if api.Stage=="Idle"then
+            if api.Continuous and not armedAt then armedAt=now end
             if not armedAt then api.Status="Waiting for first bag count change";return end
-            if now<armedAt+api.Interval then
-                api.Status=string.format("Collecting — camp visit in %.1fs",armedAt+api.Interval-now)
+            local interval=api.Continuous and 10 or api.Interval
+            if now<armedAt+interval then
+                api.Status=string.format("Collecting — camp visit in %.1fs",armedAt+interval-now)
                 return
             end
             if c.Cracking then api.Status="Waiting for your manual station session to end";return end
@@ -970,7 +976,7 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Events=events}))
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -1078,7 +1084,7 @@ local function createLiveMagnetUpgrades(CrackSell)
         local nextSave=0
         while api.Running do
             local ok,err=pcall(function()
-                if CrackSell.Enabled and api.IsMaxed()then
+                if CrackSell.Enabled and not CrackSell.Continuous and api.IsMaxed()then
                     CrackSell.Stop("Both GEO-MAG upgrades are maxed — auto crack and sell disabled")
                 end
                 api.Tick()
@@ -1417,7 +1423,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
         if not Pickup.Enabled then Pickup.Start()end
         if not MagnetUpgrades.Enabled then MagnetUpgrades.Start()end
-        if not MagnetUpgrades.IsMaxed()and not CrackSell.Enabled then CrackSell.Start()end
+        if(CrackSell.Continuous or not MagnetUpgrades.IsMaxed())and not CrackSell.Enabled then CrackSell.Start()end
         record("RunManaged",{})
     end,Finish=function()
         if previous then
@@ -1924,7 +1930,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.6",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.7",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -1984,8 +1990,11 @@ end})
 local cycleInterval=main:Slider({Title="Wait After Bag Change (seconds)",Step=1,Value={Min=2,Max=60,Default=10},Callback=function(value)
     CrackSell.SetInterval(value)
 end})
+local continuousCrack=main:Toggle({Title="Keep Cracking Every 10 Seconds",Value=false,Callback=function(value)
+    CrackSell.SetContinuous(value)
+end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Upgrade Limit",Desc="Auto Crack and Sell turns off when both GEO-MAG upgrades reach their maximum replicated levels."})
+main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking Every 10 Seconds to repeat while geodes are available, even after max upgrades. Waits 10 seconds between completed cycles. Otherwise uses the bag-change delay and stops at max upgrades."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
@@ -2018,6 +2027,7 @@ config:Register("PickupRange",pickupRange)
 config:Register("AutoOpenHauntedEgg",eggToggle)
 config:Register("AutoCrackAndSell",crackToggle)
 config:Register("CrackSellBagDelay",cycleInterval)
+config:Register("CrackSellContinuous",continuousCrack)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
@@ -2041,7 +2051,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2052,6 +2062,7 @@ local loaded,loadError=config:Load(true,type(resumed)=="table"and resumed.GameId
 if type(resumed)=="table"and resumed.GameId==10770110947 then
     pickupRange:Set(tonumber(resumed.Range)or 26)
     cycleInterval:Set(tonumber(resumed.BagDelay)or 10)
+    continuousCrack:Set(resumed.CrackSellContinuous==true)
     hoverHeight:Set(tonumber(resumed.EndlessHover)or 6.5)
     if type(resumed.MenuKey)=="string"and Enum.KeyCode[resumed.MenuKey]then menuKey:Set(resumed.MenuKey)end
     pickupToggle:Set(resumed.Pickup==true)
