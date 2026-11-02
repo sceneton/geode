@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.8"
+local geodeVersion="1.10.9"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1525,18 +1525,30 @@ end
 
 -- Owns only the native button source and an independent direct-pickup gate.
 local function createNativeHeldFire(options)
-    local api={Owned=false,Active=false,Starts=0,Releases=0,Recoveries=0}
+    local api={Owned=false,Active=false,Starts=0,Releases=0,Recoveries=0,Focused=true,FocusChanges=0,Keepalives=0}
     local readyAt=0
     local lastProgress;local progressAt=0
+    local pendingAt;local pendingReason;local keepaliveAt=0
+    function api.Invalidate(reason)
+        if not api.Owned or not api.Active then return end
+        if not pendingAt then pendingAt=options.Now()+.05;pendingReason=reason or"Input reset"end
+    end
+    function api.SetFocused(value)
+        value=value==true
+        if api.Focused==value then return end
+        api.Focused=value;api.FocusChanges+=1
+        api.Invalidate(value and"Window focus gained"or"Window focus lost")
+    end
     function api.ReleaseFire()
         if not api.Active then return end
         api.Active=false;api.Releases+=1
-        lastProgress=nil
+        lastProgress=nil;pendingAt=nil;pendingReason=nil
         options.SetUse(false,"button")
     end
     function api.Stop()
         local ok,err=pcall(api.ReleaseFire)
         if api.Owned then api.Owned=false;options.Suppress(false)end
+        pendingAt=nil;pendingReason=nil
         if not ok then error(err)end
     end
     function api.Update(owner,allowed)
@@ -1550,15 +1562,27 @@ local function createNativeHeldFire(options)
         if not api.Active and options.Now()>=readyAt then
             api.Active=true;api.Starts+=1
             progressAt=options.Now();lastProgress=options.Progress and options.Progress()
+            keepaliveAt=options.Now()+.25;pendingAt=nil;pendingReason=nil
             options.SetUse(true,"button")
-        elseif api.Active and options.Progress then
-            local now=options.Now();local progress=options.Progress()
-            if progress~=lastProgress then lastProgress=progress;progressAt=now
-            elseif now-progressAt>=1.5 then
+        elseif api.Active then
+            local now=options.Now()
+            if options.Progress then
+                local progress=options.Progress()
+                if progress~=lastProgress then lastProgress=progress;progressAt=now end
+            end
+            local reason=pendingAt and now>=pendingAt and pendingReason
+            if not reason and options.Progress and now-progressAt>=1.5 then reason="Firing stalled"end
+            if reason then
                 -- Native focus/input resets can clear the game's hold while our
                 -- ownership remains active. Reassert only after firing stalls,
                 -- and only through the normal allowed-input guards above.
-                progressAt=now;api.Recoveries+=1
+                progressAt=now;api.Recoveries+=1;api.LastRecoveryReason=reason
+                pendingAt=nil;pendingReason=nil;keepaliveAt=now+.25
+                options.SetUse(true,"button")
+            elseif not api.Focused and now>=keepaliveAt then
+                -- Keep the native button source alive in background windows;
+                -- native cooldown/raycast checks still govern actual attacks.
+                keepaliveAt=now+.25;api.Keepalives+=1
                 options.SetUse(true,"button")
             end
         end
@@ -1609,6 +1633,7 @@ end
 local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
+    local Input=game:GetService("UserInputService")
     local H=game:GetService("HttpService")
     local MTG=game:GetService("ReplicatedStorage").MTG
     local C=P.PlayerScripts.MTGClient
@@ -1629,6 +1654,14 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if value then Pickup.NativeHeldOwner=held
             elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
         end})
+    local activeWindow=isrbxactive or iswindowactive
+    if type(activeWindow)=="function"then
+        local ok,focused=pcall(activeWindow)
+        if ok and type(focused)=="boolean"then held.SetFocused(focused)end
+    end
+    local focusLost=Input.WindowFocusReleased:Connect(function()held.SetFocused(false)end)
+    local focusGained=Input.WindowFocused:Connect(function()held.SetFocused(true)end)
+    local nativeUse=Tools.Use.Event:Connect(function(value)if value==false then held.Invalidate("Native use released")end end)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
@@ -1776,6 +1809,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,AutoBossFight=api.BossEnabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
+                WindowFocused=held.Focused,FocusChanges=held.FocusChanges,BackgroundKeepalives=held.Keepalives,LastRecoveryReason=held.LastRecoveryReason,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
@@ -1795,6 +1829,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
+            api.NativeWindowFocused=held.Focused;api.NativeBackgroundKeepalives=held.Keepalives;api.NativeFocusChanges=held.FocusChanges
         end)
         if not holdOK then api.StopBoss();api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
         if CrackSell.Busy or Bench.isCracking()then release();return end
@@ -1850,7 +1885,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         api.AimMode=api.Stage=="Mining"and"AOE sweep"or"Boss"
     end)
     local unload=api.Unload
-    function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeBossHit:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
+    function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeBossHit:Disconnect();nativeFeedback:Disconnect();focusLost:Disconnect();focusGained:Disconnect();nativeUse:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(function()
@@ -2202,7 +2237,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.8",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.9",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
