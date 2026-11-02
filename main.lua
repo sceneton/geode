@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.4"
+local geodeVersion="1.9.5"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1347,7 +1347,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local smoothedCameraRotation
     local collision={};local savedCamera;local previous
     local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
-    local nextHit=0;local nextEquip=0
+    local nextEquip=0
     local events={};local api
     local function record(kind,data)
         events[#events+1]={Kind=kind,At=os.time(),Depth=S.run("Depth"),Data=data}
@@ -1443,11 +1443,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 cameraOutward=radial
             end
         else
-            held.ReleaseFire()
             if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
             if not body then release();self.Status="Waiting for boss body";return end
-            local root=P.Character.HumanoidRootPart;local spot=0;local at=Vector3.zero;local hasWeak=false
+            local at=Vector3.zero;local hasWeak=false
             for i=1,4 do
                 local dir=S.run("MotherSpot"..i)
                 if typeof(dir)=="Vector3"and dir.Magnitude>.5 and S.run("MotherSpot"..i.."Id",0)~=0 and S.run("MotherSpot"..i.."Hits",0)>0 then
@@ -1455,18 +1454,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                     at=body.Position+dir.Unit*(body.Size.X/2)
                     target=body.Position+dir.Unit*(body.Size.X/2+self.Hover)-Vector3.new(0,1.5,0)
                     focus=at
-                    spot=Tools.spotAt(at)or 0
                     break
                 end
             end
             if not hasWeak then
                 local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
                 target=body.Position+radial*(body.Size.X/2+self.Hover);focus=body.Position
-            end
-            if now>=nextHit and(root.Position-body.Position).Magnitude<38 then
-                nextHit=now+.125
-                MTG.Remotes.Mother:FireServer("Hit",1,"Magnet",spot~=0 and 1 or 0,spot,spot~=0 and at or Vector3.zero)
-                self.Hits+=1;if spot~=0 then self.WeakHits+=1 end
             end
         end
     end})
@@ -1480,6 +1473,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local nativeFired=Tools.Fired.Event:Connect(function(tool)
         if held.Active and tool=="Magnet"then
             api.NativeFireEvents+=1
+        end
+    end)
+    local nativeBossHit=Tools.MotherHit.Event:Connect(function(_,_,tool,spot)
+        if held.Active and api.Stage=="Boss"and tool=="Magnet"then
+            api.Hits+=1;if spot~=nil and spot~=0 then api.WeakHits+=1 end
         end
     end)
     local nativeFeedback=MTG.Remotes.Pick.OnClientEvent:Connect(function(id,tool,packed)
@@ -1501,8 +1499,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             api.FrameInterval=api.FrameInterval*.95+math.clamp(dt,.001,.1)*.05
             local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
             local owner=api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
-            local allowed=owner and api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true
-                and plan~=nil and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
+            local mining=api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and plan~=nil
+            local boss=api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0
+            local allowed=owner and(mining or boss)and movementStage==api.Stage
+                and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
                 and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
@@ -1561,7 +1561,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         api.AimMode=api.Stage=="Mining"and"AOE sweep"or"Boss"
     end)
     local unload=api.Unload
-    function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
+    function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeBossHit:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(function()
@@ -1913,7 +1913,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.4",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.5",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2098,4 +2098,3 @@ if not success then
 end
 if not result then releaseGeodeBoot()end
 return result -- return Hub is inside the protected constructor
-
