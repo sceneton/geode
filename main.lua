@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.6"
+local geodeVersion="1.10.7"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,ExperimentalLoadingRemoval=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -784,6 +784,131 @@ local function createLiveClassMutations()
 end
 
 local ClassMutations=createLiveClassMutations()
+local function createLoadingRemovalController(options)
+    local api={Running=true,Enabled=false,Status="Off",IntrosSkipped=0}
+    local requested=false;local cleared=false
+    function api.Stop(reason)
+        api.Enabled=false;requested=false;cleared=false
+        options.Restore();api.Status=reason or"Off"
+    end
+    function api.Start()
+        if not api.Running or api.Enabled then return end
+        api.Enabled=true;requested=false;cleared=false
+        local ok,err=pcall(options.Apply)
+        if not ok then api.Stop("Experimental skip failed: "..tostring(err));return end
+        api.Status="Experimental loading removal enabled"
+    end
+    function api.Tick()
+        if not api.Running or not api.Enabled then return end
+        local c=options.Context()
+        if c.Loading then options.TrimLoading()end
+        if not c.Ready then cleared=false;api.Status="Hiding loading visuals — waiting for client readiness";return end
+        if c.Intro then
+            cleared=false
+            if not requested then options.SkipIntro();requested=true;api.IntrosSkipped+=1 end
+            api.Status="Waiting for native intro cleanup"
+        else
+            requested=false
+            if not cleared then options.ReleaseHold();cleared=true end
+            api.Status="Enabled — ready for the next loading sequence"
+        end
+    end
+    function api.Unload()api.Stop();api.Running=false end
+    return api
+end
+
+local function createLiveLoadingRemoval()
+    local P=game:GetService("Players").LocalPlayer
+    local M=game:GetService("ReplicatedStorage").MTG
+    local C=P.PlayerScripts.MTGClient
+    local State=require(C.State)
+    local Intro=require(C.Intro)
+    local gameConfig=require(M.Config.Game)
+    local introConfig=require(M.Config.Intro)
+    local gui=P:WaitForChild("PlayerGui")
+    local api;local patches={};local hidden={};local trimmed=setmetatable({},{__mode="k"})
+    local names={MTG_Loading=true,MTG_LoadingHud=true,MTG_Transit=true,MTG_TransitHud=true}
+    local function patch(target,key,value)
+        if type(target)~="table"then return end
+        for _,p in ipairs(patches)do if p.Target==target and p.Key==key then return end end
+        local old=rawget(target,key)
+        target[key]=value
+        patches[#patches+1]={Target=target,Key=key,Old=old,Value=value}
+    end
+    local function trim(cfg)
+        patch(cfg,"LightSettle",0);patch(cfg,"MinShow",0);patch(cfg,"Fade",.01)
+    end
+    local function hide(screen)
+        if not api or not api.Enabled or not screen:IsA("ScreenGui")or not names[screen.Name]or hidden[screen]then return end
+        local entry={Enabled=screen.Enabled};hidden[screen]=entry
+        entry.Connection=screen:GetPropertyChangedSignal("Enabled"):Connect(function()
+            if api.Enabled and screen.Enabled then entry.Enabled=true;screen.Enabled=false end
+        end)
+        entry.Destroying=screen.Destroying:Connect(function()
+            entry.Connection:Disconnect();entry.Destroying:Disconnect();hidden[screen]=nil
+        end)
+        screen.Enabled=false
+    end
+    local function trimCurrentLoading()
+        local screen=gui:FindFirstChild("MTG_Loading")
+        if not screen or trimmed[screen]then return end
+        -- The loader owns a private copy of Game.Loading. Its native Skip
+        -- button closes over that object, allowing cosmetic-only adjustments
+        -- without skipping readiness waits or manually destroying its GUI.
+        local getter=getupvalues or(debug and debug.getupvalues)
+        if type(getconnections)~="function"or type(getter)~="function"then trimmed[screen]=true;return end
+        local hud=gui:FindFirstChild("MTG_LoadingHud")
+        local button=screen:FindFirstChild("Skip",true)or(hud and hud:FindFirstChild("Skip",true))
+        if not button or not button:IsA("GuiButton")then return end
+        pcall(function()
+            for _,connection in ipairs(getconnections(button.Activated))do
+                if type(connection.Function)=="function"then
+                    for _,value in pairs(getter(connection.Function))do
+                        if type(value)=="table"and rawget(value,"Gui")==screen and type(rawget(value,"Cfg"))=="table"then
+                            trim(value.Cfg);trimmed[screen]=true;api.LoadingTimerAdjusted=true;return
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    api=createLoadingRemovalController({Apply=function()
+        trim(gameConfig.Loading)
+        patch(introConfig.Skip,"ToBlack",.01);patch(introConfig.Skip,"FromBlack",.01)
+        patch(introConfig.LoadHold,"Enabled",false)
+        for _,screen in ipairs(gui:GetChildren())do hide(screen)end
+    end,Restore=function()
+        for screen,entry in pairs(hidden)do
+            entry.Connection:Disconnect()
+            entry.Destroying:Disconnect()
+            if screen.Parent and not screen:GetAttribute("Exiting")then screen.Enabled=entry.Enabled end
+        end
+        hidden={}
+        for i=#patches,1,-1 do local p=patches[i];if rawget(p.Target,p.Key)==p.Value then p.Target[p.Key]=p.Old end end
+        patches={};trimmed=setmetatable({},{__mode="k"});api.LoadingTimerAdjusted=false
+    end,Context=function()
+        local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
+        local role=M:GetAttribute("Role")
+        local ready=P:GetAttribute("ClientReady")==true and char~=nil and char:FindFirstChild("HumanoidRootPart")~=nil
+            and hum~=nil and hum.Health>0 and(role=="Game"and workspace:FindFirstChild("CaveMap")~=nil
+                or role=="Lobby"and P:GetAttribute("MenusReady")==true and workspace:FindFirstChild("LobbyMap")~=nil)
+        return {Ready=ready,Loading=gui:FindFirstChild("MTG_Loading")~=nil,
+            Intro=Intro.isPlaying()and(tonumber(State.run("IntroEnds",0))or 0)>workspace:GetServerTimeNow()}
+    end,TrimLoading=trimCurrentLoading,SkipIntro=function()Intro.forceSkip()end,ReleaseHold=function()Intro.hold(false)end})
+    local added=gui.ChildAdded:Connect(hide)
+    local unload=api.Unload
+    function api.Unload()unload();added:Disconnect()end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(api.Tick)
+            if not ok then api.Stop("Experimental skip error: "..tostring(err))end
+            task.wait(.1)
+        end
+    end)
+    return api
+end
+
+local LoadingRemoval=createLiveLoadingRemoval()
 local function createCrackSellController(options)
     local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0}
     local armedAt;local lastBag;local observedIdentity
@@ -2067,12 +2192,13 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.6",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.7",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    LoadingRemoval.Unload()
     ClassMutations.Unload()
     AutoPerks.Unload()
     Endless.Unload()
@@ -2091,6 +2217,7 @@ local main=overview:Tab({Title="Main"})
 local endlessTab=overview:Tab({Title="Endless"})
 local eggs=overview:Tab({Title="Eggs"})
 local mutations=overview:Tab({Title="Class Mutations"})
+local experimental=overview:Tab({Title="Experimental"})
 local settings=overview:Tab({Title="Configs & Settings"})
 endlessTab:Section({Title="Endless Farming"})
 local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
@@ -2171,6 +2298,12 @@ local mutationToggle=mutations:Toggle({Title="Auto Roll Class Mutation",Value=fa
 end})
 mutations:Paragraph({Title="Mutation Rolling",Desc="Uses one selected scroll per accepted roll. Keeps the better mutation. Stops at the target or higher, the roll limit, no scrolls, or a server error. One request at a time, without the roll animation. Settings apply on the next start; rolling starts off after reloading."})
 local mutationStatus=mutations:Paragraph({Title="Class Mutation Status",Desc="Paused"})
+experimental:Section({Title="Loading & Intro"})
+local loadingToggle=experimental:Toggle({Title="Experimental Loading Cutscene Removal",Value=false,Callback=function(value)
+    if value then LoadingRemoval.Start()elseif LoadingRemoval.Enabled then LoadingRemoval.Stop()end
+end})
+experimental:Paragraph({Title="Experimental Behavior",Desc="Hides loading/transit overlays, reduces cosmetic loading waits and uses the native intro skip after client readiness. Real loading checks remain. Enable before the next transition; some initial loading may happen before the hub starts. Disabling restores owned settings and surviving overlays. Does not skip boss or results cutscenes."})
+local loadingStatus=experimental:Paragraph({Title="Loading Removal Status",Desc="Off"})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
@@ -2191,6 +2324,7 @@ config:Register("MutationClass",mutationClass)
 config:Register("MutationScrollType",mutationScroll)
 config:Register("MutationTarget",mutationTarget)
 config:Register("MutationRollLimit",mutationLimit)
+config:Register("ExperimentalLoadingRemoval",loadingToggle)
 settings:Button({Title="Save Config",Callback=function()
     local result,err=config:Save()
     NativeUI:Notify({Title="Config",Content=result and"Saved default config"or("Save failed: "..tostring(err))})
@@ -2209,7 +2343,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,LoadingRemoval=LoadingRemoval.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2231,6 +2365,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     escapeToggle:Set(resumed.Escape==true)
     endlessToggle:Set(resumed.Endless==true)
     perkToggle:Set(resumed.AutoPerks==true)
+    loadingToggle:Set(resumed.LoadingRemoval==true)
     if resumed.MenuClosed then Window:Close()end
 end
 continuation.Save()
@@ -2241,6 +2376,8 @@ task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
+        if loadingToggle.Value~=LoadingRemoval.Enabled then loadingToggle:Set(LoadingRemoval.Enabled)end
+        loadingStatus:SetDesc(LoadingRemoval.Status.."\nNative intros skipped: "..LoadingRemoval.IntrosSkipped.." | Current loader timer adjusted: "..tostring(LoadingRemoval.LoadingTimerAdjusted==true))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
