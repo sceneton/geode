@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.9"
+local geodeVersion="1.10.0"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -707,6 +707,83 @@ local function createLiveHauntedEggs()
 end
 
 local Eggs=createLiveHauntedEggs()
+local function createClassMutationController(options)
+    local api={Running=true,Enabled=false,Busy=false,Class=options.DefaultClass or"Rookie",ScrollType="Normal",Target="Glitched",Limit=10,
+        Requests=0,Accepted=0,SessionRequests=0,Status="Paused",LastRolled="—"}
+    local session;local nextRequest=0
+    function api.SetClass(value)if type(value)=="string"then api.Class=value end end
+    function api.SetScrollType(value)if value=="Normal"or value=="Lucky"then api.ScrollType=value end end
+    function api.SetTarget(value)if options.Tier(value)>0 then api.Target=value end end
+    function api.SetLimit(value)
+        value=tonumber(value)
+        if value and value==value then api.Limit=math.floor(math.clamp(value,1,1000))end
+    end
+    function api.Stop(reason)api.Enabled=false;api.Status=reason or"Paused"end
+    function api.Start()
+        if not api.Running or api.Enabled then return end
+        if api.Busy then api.Status="Waiting for previous roll response";return end
+        session={Class=api.Class,ScrollType=api.ScrollType,Target=api.Target,Limit=api.Limit}
+        api.SessionRequests=0;api.Enabled=true;nextRequest=0;api.Status="Checking class and scrolls"
+    end
+    function api.Unload()api.Stop();api.Running=false end
+    function api.Tick()
+        if not api.Running or not api.Enabled or api.Busy or options.Now()<nextRequest then return end
+        local c=options.Context(session.Class,session.ScrollType)
+        if not c.Owned then api.Stop("Selected class is not owned");return end
+        if options.Tier(c.Mutation)>=options.Tier(session.Target)then api.Stop("Target reached: "..tostring(c.Mutation));return end
+        if api.SessionRequests>=session.Limit then api.Stop("Roll limit reached");return end
+        if c.Scrolls<1 then api.Stop("No "..session.ScrollType.." Scrolls remaining");return end
+        api.Busy=true;api.Requests+=1;api.SessionRequests+=1
+        api.Status="Rolling "..session.Class.." ("..api.SessionRequests.."/"..session.Limit..")"
+        nextRequest=options.Now()+math.max(.12,options.RollRate or .12)
+        local ok,result=pcall(options.Roll,session.Class,session.ScrollType)
+        api.Busy=false
+        if not ok or type(result)~="table"or result.Ok~=true then
+            api.Stop("Roll stopped: "..tostring(ok and type(result)=="table"and result.Msg or result));return
+        end
+        api.Accepted+=1;api.LastRolled=tostring(result.Rolled or"Unknown");api.LastMutation=result.Mut
+        if not api.Running or not api.Enabled then return end
+        if options.Tier(result.Mut)>=options.Tier(session.Target)then api.Stop("Target reached: "..tostring(result.Mut))
+        elseif api.SessionRequests>=session.Limit then api.Stop("Roll limit reached")
+        else api.Status="Rolled "..api.LastRolled.." — kept "..tostring(result.Mut)end
+    end
+    return api
+end
+
+local function createLiveClassMutations()
+    local P=game:GetService("Players").LocalPlayer
+    local H=game:GetService("HttpService")
+    local M=game:GetService("ReplicatedStorage").MTG
+    local config=require(M.Config.Mutations)
+    local function decode(name)
+        local ok,value=pcall(H.JSONDecode,H,P:GetAttribute(name)or"{}")
+        return ok and type(value)=="table"and value or{}
+    end
+    local function tier(id)local def=config.ById[id];return def and def.Tier or 0 end
+    local api=createClassMutationController({DefaultClass=P:GetAttribute("Class")or"Rookie",Now=os.clock,Tier=tier,RollRate=config.RollRate,
+        Context=function(class,scroll)
+            local owned=class=="Rookie"or class==P:GetAttribute("Class")
+                or(","..tostring(P:GetAttribute("Classes"))..","):find(","..class..",",1,true)~=nil
+            return {Owned=owned,Mutation=decode("ClassMuts")[class],Scrolls=tonumber(decode("Scrolls")[scroll=="Lucky"and"L"or"N"])or 0}
+        end,Roll=function(class,scroll)return M.Remotes.Mutations:InvokeServer("Roll","Class",class,scroll)end})
+    function api.ClassOptions()
+        local set={Rookie=true};local values={}
+        for class in tostring(P:GetAttribute("Classes")or""):gmatch("[^,]+")do set[class]=true end
+        set[P:GetAttribute("Class")or"Rookie"]=true
+        for class in pairs(set)do values[#values+1]=class end;table.sort(values);return values
+    end
+    function api.TargetOptions()local values={};for _,def in ipairs(config.List)do values[#values+1]=def.Id end;return values end
+    task.spawn(function()
+        while api.Running do
+            local ok,err=pcall(api.Tick)
+            if not ok then api.Busy=false;api.Stop("Mutation error: "..tostring(err))end
+            task.wait(.05)
+        end
+    end)
+    return api
+end
+
+local ClassMutations=createLiveClassMutations()
 local function createCrackSellController(options)
     local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0}
     local armedAt;local lastBag;local observedIdentity
@@ -1949,12 +2026,13 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.9",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.0",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    ClassMutations.Unload()
     AutoPerks.Unload()
     Endless.Unload()
     Escape.Unload()
@@ -1971,6 +2049,7 @@ local overview=Window:Section({Title="Overview"})
 local main=overview:Tab({Title="Main"})
 local endlessTab=overview:Tab({Title="Endless"})
 local eggs=overview:Tab({Title="Eggs"})
+local mutations=overview:Tab({Title="Class Mutations"})
 local settings=overview:Tab({Title="Configs & Settings"})
 endlessTab:Section({Title="Endless Farming"})
 local endlessToggle=endlessTab:Toggle({Title="Auto Endless Mode",Value=false,Callback=function(value)
@@ -2040,6 +2119,17 @@ eggs:Button({Title="Export Egg Diagnostics",Callback=function()
     local ok,err=Eggs.Export()
     NativeUI:Notify({Title="Egg Diagnostics",Content=ok and"Saved to Geode/haunted_egg_diagnostics.json"or tostring(err)})
 end})
+mutations:Section({Title="Class Mutation Rolls"})
+local mutationClass=mutations:Dropdown({Title="Class to Mutate",Values=ClassMutations.ClassOptions(),Value=ClassMutations.Class,Callback=ClassMutations.SetClass})
+mutations:Button({Title="Refresh Owned Classes",Callback=function()mutationClass:Refresh(ClassMutations.ClassOptions())end})
+local mutationScroll=mutations:Dropdown({Title="Mutation Scroll Type",Values={"Normal","Lucky"},Value="Normal",Callback=ClassMutations.SetScrollType})
+local mutationTarget=mutations:Dropdown({Title="Stop at Mutation",Values=ClassMutations.TargetOptions(),Value="Glitched",Callback=ClassMutations.SetTarget})
+local mutationLimit=mutations:Slider({Title="Maximum Rolls per Start",Step=1,Value={Min=1,Max=1000,Default=10},Callback=ClassMutations.SetLimit})
+local mutationToggle=mutations:Toggle({Title="Auto Roll Class Mutation",Value=false,Callback=function(value)
+    if value then ClassMutations.Start()elseif ClassMutations.Enabled then ClassMutations.Stop()end
+end})
+mutations:Paragraph({Title="Mutation Rolling",Desc="Uses one selected scroll per accepted roll. Keeps the better mutation. Stops at the target or higher, the roll limit, no scrolls, or a server error. One request at a time, without the roll animation. Settings apply on the next start; rolling starts off after reloading."})
+local mutationStatus=mutations:Paragraph({Title="Class Mutation Status",Desc="Paused"})
 settings:Section({Title="Configuration"})
 local config=Window.ConfigManager:CreateConfig("default")
 local autoLoad=settings:Toggle({Title="Auto-load Saved Config",Value=true,Callback=function()end})
@@ -2056,6 +2146,10 @@ config:Register("AutoEscape",escapeToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoSelectPerk",perkToggle)
+config:Register("MutationClass",mutationClass)
+config:Register("MutationScrollType",mutationScroll)
+config:Register("MutationTarget",mutationTarget)
+config:Register("MutationRollLimit",mutationLimit)
 settings:Button({Title="Save Config",Callback=function()
     local result,err=config:Save()
     NativeUI:Notify({Title="Config",Content=result and"Saved default config"or("Save failed: "..tostring(err))})
@@ -2106,6 +2200,8 @@ task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
+        if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
+        mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
