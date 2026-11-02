@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.9"
+local geodeVersion="1.10.10"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1967,15 +1967,15 @@ local function createGeodePerkRanker()
         end
         if bonus.BossDamage then
             local gain=bonus.BossDamage*stacks/math.max(10,100+(mods.BossDamage or 0))
-            score=math.max(score,((c.Depth or 1)>=20 and 55 or 40)+math.min(40,gain*200))
-            reason="Direct boss damage, with higher priority at later depths"
+            score=math.max(score,math.min(98,((c.Depth or 1)>=20 and 67 or 48)+math.min(40,gain*200)))
+            reason="Direct boss damage; raised priority for scaling bosses, adjusted for existing bonuses"
         end
         if bonus.Power or def.BossPower then
             local power=(bonus.Power or def.BossPower)*stacks
             local total=math.max(1,c.CrackPowerPercent or 100)
             local gain=math.sqrt((total+power)/total)-1
-            score=math.max(score,((c.Depth or 1)>=20 and 55 or 40)+math.min(40,gain*200))
-            reason="Boss benefit follows the square-root crack-power damage curve"
+            score=math.max(score,math.min(98,((c.Depth or 1)>=20 and 67 or 48)+math.min(40,gain*200)))
+            reason="Raised boss priority; benefit still follows the square-root crack-power damage curve"
         end
         if bonus.PickSpeed or id=="Momentum"then
             local speed=bonus.PickSpeed or 20
@@ -2237,7 +2237,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.9",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.10",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
