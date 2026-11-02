@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.0"
+local geodeVersion="1.9.1"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1484,7 +1484,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
-                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/12,OrbitLapSeconds=12,Events=events}))
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
@@ -1515,7 +1515,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             root.CFrame=CFrame.lookAt(target,focus)
             root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
             if api.Stage=="Mining"and not pendingBand then
-                angle+=math.min(dt,.1)*(math.pi*2/12)
+                angle+=math.min(dt,.1)*(math.pi*2/14)
                 if angle>=math.pi*2 then
                     angle=0;api.Laps+=1;pendingBand=band+1
                     record("LapComplete",{Ring=band,Laps=api.Laps})
@@ -1887,7 +1887,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
