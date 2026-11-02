@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.7"
+local geodeVersion="1.10.8"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoEndless=true,AutoSelectPerk=true,ExperimentalLoadingRemoval=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoBossFight=true,AutoEndless=true,AutoSelectPerk=true,ExperimentalLoadingRemoval=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -1415,35 +1415,43 @@ end
 
 local Escape=createLiveEscape(CrackSell)
 local function createEndlessController(options)
-    local api={Running=true,Enabled=false,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
+    local api={Running=true,Enabled=false,BossEnabled=false,Stage="Paused",Status="Paused",Hover=6.5,Laps=0,Hits=0,WeakHits=0}
     local managedRun;local managed=false;local previousPhase
     function api.Start()if api.Running then api.Enabled=true end end
+    function api.StartBoss()if api.Running then api.BossEnabled=true end end
+    function api.StopBoss()
+        api.BossEnabled=false
+        if not api.Enabled then api.Stage="Paused";api.Status="Paused";options.Release()end
+    end
     function api.Stop()
         api.Enabled=false;api.Stage="Paused";api.Status="Paused"
         options.Release()
         if managed then options.Finish()end
         managed=false;managedRun=nil;previousPhase=nil
     end
-    function api.Unload()api.Stop();api.Running=false end
+    function api.Unload()api.BossEnabled=false;api.Stop();api.Running=false end
     function api.SetHover(value)
         value=tonumber(value)
         if value and value==value then api.Hover=math.clamp(value,2,20)end
     end
     function api.Tick()
-        if not api.Running or not api.Enabled then return end
+        if not api.Running or not(api.Enabled or api.BossEnabled)then return end
         local c=options.Context()
-        if managed and(not c.Endless or c.Ended)then options.Release();options.Finish();managed=false;managedRun=nil end
+        local farming=api.Enabled and c.Endless
+        local bossOnly=api.BossEnabled and c.Game
+        if managed and(not farming or c.Ended)then options.Release();options.Finish();managed=false;managedRun=nil end
         local stage,status
-        if not c.Endless then stage,status="Waiting","Waiting for Endless mode"
-        elseif c.Ended then stage,status="Waiting","Endless run ended"
+        if not(farming or bossOnly)then stage,status="Waiting",api.BossEnabled and"Waiting for a boss fight"or"Waiting for Endless mode"
+        elseif c.Ended then stage,status="Waiting","Run ended"
         elseif not c.Alive then stage,status="Waiting","Waiting for a living character"
         elseif not c.Owned then stage,status="Waiting","GEO-MAG 3000 ownership required"
+        elseif not farming and c.CombatBlocked then stage,status="Waiting","Waiting for boss controls"
         else
-            if not managed or managedRun~=c.Run or(c.Phase=="Mining"and previousPhase~="Mining")then options.Manage();managed=true;managedRun=c.Run end
+            if farming and(not managed or managedRun~=c.Run or(c.Phase=="Mining"and previousPhase~="Mining"))then options.Manage();managed=true;managedRun=c.Run end
             if c.CampBusy then stage,status="Camp","Camp cycle owns movement"
-            elseif c.Phase=="Mining"then stage,status="Mining","Hovering around the mound"
+            elseif farming and c.Phase=="Mining"then stage,status="Mining","Hovering around the mound"
             elseif c.Phase=="Mother"and c.HP>0 then stage,status="Boss","Targeting boss weak points"
-            else stage,status="Waiting","Waiting for the next mining depth"end
+            else stage,status="Waiting",farming and"Waiting for the next mining depth"or"Waiting for a boss fight"end
         end
         api.Stage,api.Status=stage,status
         previousPhase=c.Phase
@@ -1676,10 +1684,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     end
     api=createEndlessController({Context=function()
         local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
-        return {Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
+        return {Game=S.role()=="Game",Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
             Run=S.run("RunStart"),Depth=S.run("Depth"),HP=S.run("MotherHP",0),Ended=S.run("Ended",false)==true or S.run("EndlessOver",false)==true,
             Alive=hum~=nil and hum.Health>0 and char:FindFirstChild("HumanoidRootPart")~=nil,
-            Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking()}
+            Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking(),
+            CombatBlocked=Tools.Blocked or Tools.DevPaused or UIKit.cursorFree()or P:GetAttribute("PerkPending")==true}
     end,Manage=function()
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
         if not Pickup.Enabled then Pickup.Start()end
@@ -1721,7 +1730,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 cameraOutward=radial
             end
         else
-            if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
+            if api.Enabled and S.run("Mode")=="Endless"and(CrackSell.Enabled or CrackSell.Busy)then CrackSell.Stop("Paused for boss fight")end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
             if not body then release();self.Status="Waiting for boss body";return end
             local at=Vector3.zero;local hasWeak=false
@@ -1764,7 +1773,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     function api.Export()
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
-            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
+            writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,AutoBossFight=api.BossEnabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
@@ -1776,8 +1785,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         local holdOK,holdError=pcall(function()
             api.FrameInterval=api.FrameInterval*.95+math.clamp(dt,.001,.1)*.05
             local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
-            local owner=api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
-            local mining=api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and plan~=nil
+            local owner=(api.Enabled and S.run("Mode")=="Endless"or api.BossEnabled and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0)
+                and S.role()=="Game"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
+            local mining=api.Enabled and S.run("Mode")=="Endless"and api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and plan~=nil
             local boss=api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0
             local allowed=owner and(mining or boss)and movementStage==api.Stage
                 and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
@@ -1786,9 +1796,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             api.NativeHeldActive=held.Active
             api.NativeFireRecoveries=held.Recoveries
         end)
-        if not holdOK then api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
+        if not holdOK then api.StopBoss();api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
         if CrackSell.Busy or Bench.isCracking()then release();return end
-        if not api.Enabled or not target then return end
+        if not(api.Enabled or api.BossEnabled)or not target then return end
         local ok,err=pcall(function()
             local char=P.Character;local root=char and char:FindFirstChild("HumanoidRootPart");local hum=char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health<=0 then release();return end
@@ -1816,11 +1826,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 end
             end
         end)
-        if not ok then api.Stop();record("MovementError",tostring(err))end
+        if not ok then api.StopBoss();api.Stop();record("MovementError",tostring(err))end
     end)
     local renderName="GeodeEndlessCamera_"..tostring(P.UserId)
     R:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
-        if not api.Enabled or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
+        if not(api.Enabled or api.BossEnabled)or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
         if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
         local direction=api.Stage=="Mining"and cameraOutward or(target-focus).Unit
@@ -1845,7 +1855,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         while api.Running do
             local ok,err=pcall(function()
                 -- Capture character restoration values before Update creates a target.
-                if api.Enabled and(P.Character~=ownedCharacter or not ownedHumanoid)then
+                if(api.Enabled or api.BossEnabled)and(P.Character~=ownedCharacter or not ownedHumanoid)then
                     release();ownedCharacter=P.Character;ownedHumanoid=ownedCharacter and ownedCharacter:FindFirstChildOfClass("Humanoid")
                     autoRotate=ownedHumanoid and ownedHumanoid.AutoRotate
                 end
@@ -1854,7 +1864,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 api.AbilityAvailable=ability.Available;api.AbilityStats=ability.Stats;api.AbilityStatus=ability.Status
                 api.AbilityRequests=ability.Requests;api.AbilityConfirmed=ability.Confirmed
             end)
-            if not ok then api.Stop();api.Status="Endless error: "..tostring(err);record("Error",tostring(err))end
+            if not ok then api.StopBoss();api.Stop();api.Status="Farming error: "..tostring(err);record("Error",tostring(err))end
             task.wait(.125)
         end
     end)
@@ -2192,7 +2202,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.7",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.8",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2264,6 +2274,12 @@ local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",St
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
 main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking & Selling to repeat while geodes are available, even after max upgrades. The repeat delay controls the wait between completed cycles. Otherwise uses the bag-change delay and stops after collecting enough money to fund all remaining GEO-MAG upgrades."})
+main:Section({Title="Boss Fight"})
+local bossToggle=main:Toggle({Title="Auto Boss Fight",Value=false,Callback=function(value)
+    if value then Endless.StartBoss()else Endless.StopBoss()end
+end})
+main:Paragraph({Title="Boss Fight Behavior",Desc="Equips the owned GEO-MAG 3000, holds fire on the boss, and moves/aims at live weak points. Returns to normal hits between openings. Waits outside boss combat; does not enable mining or camp automation. Shares one combat controller with Auto Endless to avoid overlapping movement and attacks."})
+local bossStatus=main:Paragraph({Title="Boss Fight Status",Desc="Paused"})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
@@ -2317,6 +2333,7 @@ config:Register("CrackSellContinuous",continuousCrack)
 config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("AutoEscape",escapeToggle)
+config:Register("AutoBossFight",bossToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoSelectPerk",perkToggle)
@@ -2343,7 +2360,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,LoadingRemoval=LoadingRemoval.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,AutoBossFight=Endless.BossEnabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,LoadingRemoval=LoadingRemoval.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2364,6 +2381,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     upgradeToggle:Set(resumed.MagnetUpgrades==true)
     escapeToggle:Set(resumed.Escape==true)
     endlessToggle:Set(resumed.Endless==true)
+    bossToggle:Set(resumed.AutoBossFight==true)
     perkToggle:Set(resumed.AutoPerks==true)
     loadingToggle:Set(resumed.LoadingRemoval==true)
     if resumed.MenuClosed then Window:Close()end
@@ -2382,6 +2400,8 @@ task.spawn(function()
         mutationStatus:SetDesc(ClassMutations.Status.."\nRequests this start: "..ClassMutations.SessionRequests.." | Accepted this session: "..ClassMutations.Accepted.."\nLast rolled: "..ClassMutations.LastRolled)
         perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
+        if bossToggle.Value~=Endless.BossEnabled then bossToggle:Set(Endless.BossEnabled)end
+        bossStatus:SetDesc((Endless.BossEnabled and Endless.Status or"Paused").."\nBoss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits.." | Held fire: "..(Endless.NativeHeldActive and"Active"or"Paused"))
         endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nAbility: "..tostring(Endless.AbilityStatus or"Waiting").." | Confirmed uses: "..tostring(Endless.AbilityConfirmed or 0).."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
