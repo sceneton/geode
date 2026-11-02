@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.2"
+local geodeVersion="1.9.3"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1345,7 +1345,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
         end})
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
-    local groundAim;local nextGroundAim=0
+    local groundAim;local nextGroundAim=0;local smoothedCameraRotation
     local groundOverlap=OverlapParams.new();groundOverlap.FilterType=Enum.RaycastFilterType.Include;groundOverlap.MaxParts=256
     local groundRays=RaycastParams.new();groundRays.FilterType=Enum.RaycastFilterType.Include
     local collision={};local savedCamera;local previous
@@ -1370,7 +1370,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local function release()
         held.ReleaseFire()
         target=nil;focus=nil
-        groundAim=nil;cameraOutward=nil;movementStage=nil
+        groundAim=nil;cameraOutward=nil;movementStage=nil;smoothedCameraRotation=nil
         for part,value in pairs(collision)do if part.Parent then part.CanCollide=value end end
         collision={}
         if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid.AutoRotate=autoRotate end
@@ -1417,7 +1417,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 local horizontal=Vector3.new(delta.X,0,delta.Z)
                 if col~=nil and id~=nil and delta.Magnitude<=reach and horizontal.Magnitude>.01 then
                     local alignment=horizontal.Unit:Dot(inward)
-                    if alignment>.65 then candidates[#candidates+1]={Part=part,Col=col,Id=id,Score=(1-alignment)*50+delta.Magnitude*.08+(part.Position.Y-origin.Y)*.5}end
+                    if alignment>.94 then candidates[#candidates+1]={Part=part,Col=col,Id=id,Score=(1-alignment)*50+delta.Magnitude*.08+(part.Position.Y-origin.Y)*.5}end
                 end
             end
         end
@@ -1430,7 +1430,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             local hit=workspace:Raycast(cameraPosition,(candidate.Part.Position-cameraPosition)*1.03,groundRays)
             if hit and hit.Position.Y<=origin.Y+4.5 then
                 local col,id=Render.target(hit.Instance)
-                if col~=nil and id~=nil then return {Part=hit.Instance,Col=col,Id=id}end
+                if col~=nil and id~=nil then return {Position=hit.Position,Col=col,Id=id,At=os.clock()}end
             end
         end
     end
@@ -1480,7 +1480,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
             end
-            if now>=nextGroundAim and not UIKit.cursorFree()then nextGroundAim=now+.25;groundAim=findGroundAim()end
+            if now>=nextGroundAim and not UIKit.cursorFree()then
+                nextGroundAim=now+.25
+                local found=findGroundAim()
+                if found then groundAim=found
+                elseif groundAim and now-groundAim.At>.75 then groundAim=nil end
+            end
         else
             held.ReleaseFire()
             if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
@@ -1580,21 +1585,31 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         if not ok then api.Stop();record("MovementError",tostring(err))end
     end)
     local renderName="GeodeEndlessCamera_"..tostring(P.UserId)
-    R:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function()
+    R:BindToRenderStep(renderName,Enum.RenderPriority.Last.Value+10,function(dt)
         if not api.Enabled or not target or not focus or CrackSell.Busy or Bench.isCracking()then return end
         local cam=workspace.CurrentCamera;if not cam then return end
-        if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject}end
+        if not savedCamera or savedCamera.Camera~=cam then savedCamera={Camera=cam,Type=cam.CameraType,Subject=cam.CameraSubject};smoothedCameraRotation=nil end
         local direction=api.Stage=="Mining"and cameraOutward or(target-focus).Unit
         if not direction then return end
         local cameraPosition=target+direction*3+Vector3.new(0,2,0)
         cam.CameraType=Enum.CameraType.Scriptable
         local aim=focus;local trackingGround=false
-        if api.Stage=="Mining"and groundAim and groundAim.Part.Parent then
-            local col,id=Render.target(groundAim.Part)
-            if col==groundAim.Col and id==groundAim.Id then aim=groundAim.Part.Position;trackingGround=true end
+        if api.Stage=="Mining"and groundAim and os.clock()-groundAim.At<=.75 then
+            -- Keep a world point: native collection removes/reuses geode parts.
+            local toGround=groundAim.Position-cameraPosition
+            local horizontal=Vector3.new(toGround.X,0,toGround.Z)
+            if horizontal.Magnitude>1 and horizontal.Unit:Dot(-cameraOutward)>.94 then aim=groundAim.Position;trackingGround=true end
         end
-        cam.CFrame=CFrame.lookAt(cameraPosition,aim)
-        if api.Stage=="Mining"and not trackingGround then cam.CFrame=cam.CFrame*CFrame.Angles(math.rad(10),0,0)end
+        local desired=CFrame.lookAt(cameraPosition,aim)
+        if api.Stage=="Mining"then
+            if not trackingGround then desired=desired*CFrame.Angles(math.rad(10),0,0)end
+            smoothedCameraRotation=smoothedCameraRotation or cam.CFrame.Rotation
+            local frameDt=math.clamp(tonumber(dt)or 1/60,0,.1)
+            local _,difference=smoothedCameraRotation:ToObjectSpace(desired.Rotation):ToAxisAngle()
+            local alpha=math.min(1-math.exp(-8*frameDt),math.rad(70)*frameDt/math.max(math.abs(difference),.000001))
+            smoothedCameraRotation=smoothedCameraRotation:Lerp(desired.Rotation,alpha)
+            cam.CFrame=CFrame.new(cameraPosition)*smoothedCameraRotation
+        else smoothedCameraRotation=nil;cam.CFrame=desired end
         api.AimMode=trackingGround and"Ground geodes"or"Default"
     end)
     local unload=api.Unload
@@ -1950,7 +1965,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.2",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.3",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
