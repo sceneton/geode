@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.8.4"
+local geodeVersion="1.8.5"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1379,7 +1379,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not plan then release();self.Status="Waiting for remaining mound targets";return end
             band=(band-1)%#plan.Bands+1
             self.RingCount=#plan.Bands;self.RingName=plan.Bands[band].Name
-            local b=plan.Bands[band];local radius=ringPlanner.RadiusAt(b,angle)+2
+            local b=plan.Bands[band];local radius=ringPlanner.RadiusAt(b,angle)+4
             local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
             target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
             focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
@@ -1430,7 +1430,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
-                FrameInterval=api.FrameInterval,MiningAimPitchOffset=15,OrbitOutwardOffset=2,OrbitRadiansPerSecond=math.pi*2/12,OrbitLapSeconds=12,Events=events}))
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/12,OrbitLapSeconds=12,Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
@@ -1452,7 +1452,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not root or not hum or hum.Health<=0 then release();return end
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
-                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=ringPlanner.RadiusAt(b,angle)+2
+                local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=ringPlanner.RadiusAt(b,angle)+4
                 target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
             end
@@ -1478,7 +1478,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         local direction=(target-focus).Unit
         cam.CameraType=Enum.CameraType.Scriptable
         cam.CFrame=CFrame.lookAt(target+direction*3+Vector3.new(0,2,0),focus)
-        if api.Stage=="Mining"then cam.CFrame=cam.CFrame*CFrame.Angles(math.rad(15),0,0)end
+        if api.Stage=="Mining"then cam.CFrame=cam.CFrame*CFrame.Angles(math.rad(10),0,0)end
     end)
     local unload=api.Unload
     function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
@@ -1824,7 +1824,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.8.4",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.8.5",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
