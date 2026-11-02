@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.8.0"
+local geodeVersion="1.8.1"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1338,7 +1338,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if count>0 then columns[#columns+1]={X=origin.X+Grid.X[col],Z=origin.Z+Grid.Z[col],Base=origin.Y+Grid.Base[col],
                 Top=origin.Y+Grid.topY(col,count),Count=count}end
         end
-        local fitted=ringPlanner.Build(columns,profileCenter)
+        local fitted=ringPlanner.Build(columns,profileCenter,{Fractions={.12}})
         if fitted and #fitted.Bands>0 then return fitted end
     end
     api=createEndlessController({Context=function()
@@ -1430,7 +1430,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
                 Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
-                FrameInterval=api.FrameInterval,Events=events}))
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=15,Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
@@ -1478,6 +1478,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         local direction=(target-focus).Unit
         cam.CameraType=Enum.CameraType.Scriptable
         cam.CFrame=CFrame.lookAt(target+direction*3+Vector3.new(0,2,0),focus)
+        if api.Stage=="Mining"then cam.CFrame=cam.CFrame*CFrame.Angles(math.rad(15),0,0)end
     end)
     local unload=api.Unload
     function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
@@ -1823,7 +1824,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.8.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.8.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
