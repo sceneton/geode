@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.15"
+local geodeVersion="1.10.16"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -955,11 +955,18 @@ local function createLiveAntiAfk()
 end
 
 local AntiAFK=createLiveAntiAfk()
+local function geodeSaleInCurrentRun(lastSaleAt,runStart,clockNow,serverNow)
+    if type(lastSaleAt)~="number"or type(runStart)~="number"then return false end
+    local saleAge=clockNow-lastSaleAt;local runAge=serverNow-runStart
+    return saleAge>=0 and runAge>=0 and saleAge<=runAge
+end
 local function createCrackSellController(options)
     local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local left=false;local saleBefore=0
-    local lastSaleIdentity;local lastSaleRun
+    local completedRun;local completedSale=false
+    local function hasCompletedSale(c)return c.SaleCompleted==true or completedSale and completedRun==c.Run end
+    function api.HasCompletedSale()return hasCompletedSale(options.Context())end
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
     local function stage(name,status,timeout)
         api.Stage=name;api.Status=status;deadline=options.Now()+(timeout or 4)
@@ -976,7 +983,8 @@ local function createCrackSellController(options)
     function api.Start()
         if not api.Running or api.Enabled then return end
         local c=options.Context();lastBag=c.BagCount;observedIdentity=c.Identity
-        api.Enabled=true;api.PendingStopReason=nil;armedAt=nil;api.Status="Waiting for first bag count change"
+        if not api.Continuous and hasCompletedSale(c)then api.Status="First sale already completed for this run";return end
+        api.Enabled=true;armedAt=nil;api.Status="Waiting for first bag count change"
     end
     function api.BagChanged(value)
         value=tonumber(value)or 0
@@ -988,7 +996,7 @@ local function createCrackSellController(options)
         end
     end
     function api.Stop(reason)
-        api.Enabled=false;api.PendingStopReason=nil;finish(reason or"Paused")
+        api.Enabled=false;finish(reason or"Paused")
         record("Stopped",{Reason=api.Status})
     end
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
@@ -998,20 +1006,7 @@ local function createCrackSellController(options)
     end
     function api.SetContinuous(value)
         api.Continuous=value==true
-        if api.Continuous then api.PendingStopReason=nil end
         if not api.Busy then armedAt=nil end
-    end
-    function api.RequestStopAfterSale(reason)
-        if not api.Enabled or api.Continuous or api.PendingStopReason then return end
-        local c=options.Context()
-        if not api.Busy and c.Valid and lastSaleIdentity~=nil and lastSaleIdentity==c.Identity and lastSaleRun==c.Run then
-            record("FinalSaleAlreadyCollected",{Sales=api.Sales,Cash=c.Cash,Run=c.Run})
-            api.Stop(reason or"Final sale completed");return
-        end
-        api.PendingStopReason=reason or"Final sale completed"
-        -- Finish any remaining bag/crate/bin even when pickups have stopped.
-        if not api.Busy and not armedAt then armedAt=options.Now()end
-        record("StopAfterSaleRequested",{Reason=api.PendingStopReason})
     end
     function api.SetRepeatInterval(value)
         value=tonumber(value)
@@ -1041,9 +1036,9 @@ local function createCrackSellController(options)
     local function completed(c)
         api.Cycles+=1
         record("CycleComplete",{Cycles=api.Cycles,Cash=c.Cash})
-        local stopReason=not api.Continuous and api.PendingStopReason
+        local stopAfterSale=not api.Continuous and hasCompletedSale(c)
         finish("Cycle complete — returned to pickup position")
-        if stopReason then api.Stop(stopReason)end
+        if stopAfterSale then api.Stop("First sale completed for this run")end
     end
     function api.Tick()
         if not api.Running or not api.Enabled then return end
@@ -1054,19 +1049,14 @@ local function createCrackSellController(options)
             return
         end
         if api.Busy and c.Identity~=identity then api.Stop("Cycle stopped: character or camp changed");return end
-        if not api.Continuous and api.StopCondition then
-            local reason=api.StopCondition()
-            if reason then api.RequestStopAfterSale(reason)end
-            if not api.Enabled then return end
+        if not api.Continuous and not api.Busy and hasCompletedSale(c)then
+            api.Stop("First sale already completed for this run");return
         end
         if observedIdentity~=c.Identity then armedAt=nil;lastBag=c.BagCount;observedIdentity=c.Identity end
         api.BagChanged(c.BagCount)
         local now=options.Now()
         if api.Stage=="Idle"then
-            if api.PendingStopReason and c.BagCount<=0 and c.CrateCount<=0 and not hasBin(c)then
-                api.Stop(api.PendingStopReason);return
-            end
-            if(api.Continuous or api.PendingStopReason)and not armedAt then armedAt=now end
+            if api.Continuous and not armedAt then armedAt=now end
             if not armedAt then api.Status="Waiting for first bag count change";return end
             local interval=api.Continuous and api.RepeatInterval or api.Interval
             if now<armedAt+interval then
@@ -1080,7 +1070,7 @@ local function createCrackSellController(options)
             api.Busy=true;identity=c.Identity
             local ok,reason=options.Begin()
             if not ok then api.Stop(reason or"Could not start cycle");return end
-            record("CycleBegin",{Bag=c.BagCount,Crate=c.CrateCount,Bin=c.BinCount,Cash=c.Cash})
+            record("CycleBegin",{Bag=c.BagCount,Crate=c.CrateCount,Bin=c.BinCount,Cash=c.Cash,Run=c.Run})
             if c.BagCount>0 then approach("Deposit")else proceed(c)end
             return
         end
@@ -1118,7 +1108,12 @@ local function createCrackSellController(options)
             end
         elseif api.Stage=="SaleSettle"and(c.Cash>saleBefore or now>=readyAt)then
             api.Sales+=1;api.CashGained+=math.max(0,c.Cash-saleBefore)
-            lastSaleIdentity=c.Identity;lastSaleRun=c.Run;api.LastSaleAt=now
+            completedSale=true;completedRun=c.Run;api.LastSaleAt=now
+            if options.MarkSale then
+                local ok,err=pcall(options.MarkSale,c)
+                if not ok then record("CompletionSaveError",{Error=tostring(err)})end
+            end
+            record("SaleCompleted",{Run=c.Run,Cash=c.Cash,Sales=api.Sales})
             completed(c)
         end
     end
@@ -1131,6 +1126,16 @@ local function createLiveCrackSell(Pickup)
     local MTG=game:GetService("ReplicatedStorage"):WaitForChild("MTG")
     local Bench=require(P.PlayerScripts.MTGClient.Bench)
     local remote=MTG.Remotes:WaitForChild("Bench")
+    local env=getgenv()
+    -- Preserve a sale from the previous hub version when updating mid-run.
+    -- Compare elapsed ages because local clock and server timestamps differ.
+    local previous=env.GeodeHub and env.GeodeHub.CrackSell
+    if previous and(previous.Sales or 0)>0 then
+        local state=MTG:FindFirstChild("State");local run=state and state:GetAttribute("RunStart")
+        if geodeSaleInCurrentRun(previous.LastSaleAt,run,os.clock(),workspace:GetServerTimeNow())then
+            env.__GeodeCrackSellCompletedSale={JobId=game.JobId,Run=run}
+        end
+    end
     local camp,character,identity,station,entry,deposit,sell
     local savedPose,savedCharacter,savedCamp;local enteredByUs=false;local events={};local dirty=false;local generation=0
     local function root()return P.Character and P.Character:FindFirstChild("HumanoidRootPart")end
@@ -1220,12 +1225,18 @@ local function createLiveCrackSell(Pickup)
         refresh()
         local free=chooseStation()
         local state=MTG:FindFirstChild("State")
-        return {Valid=valid(),Identity=identity,Run=state and state:GetAttribute("RunStart"),BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
+        local run=state and state:GetAttribute("RunStart")
+        local sale=env.__GeodeCrackSellCompletedSale
+        return {Valid=valid(),Identity=identity,Run=run,
+            SaleCompleted=run~=nil and type(sale)=="table"and sale.JobId==game.JobId and sale.Run==run,
+            BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
             CrateCount=camp and(tonumber(camp:GetAttribute("CrateCount"))or 0)or 0,
             BinCount=camp and(tonumber(camp:GetAttribute("BinCount"))or 0)or 0,
             BinValue=camp and(tonumber(camp:GetAttribute("BinValue"))or 0)or 0,
             Cash=tonumber(P:GetAttribute("Cash"))or 0,CanCrack=canCrack(),FreeStation=free~=nil,
             Cracking=Bench.isCracking(),StationOurs=ownsStation()and true or false}
+    end,MarkSale=function(c)
+        if c.Run~=nil then env.__GeodeCrackSellCompletedSale={JobId=game.JobId,Run=c.Run}end
     end,Begin=function()
         if type(fireproximityprompt)~="function"then return false,"Executor prompt support unavailable"end
         refresh();local r=root();if not r then return false,"Character unavailable"end
@@ -1255,7 +1266,7 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,PendingStopReason=api.PendingStopReason,LastSaleAt=api.LastSaleAt,Events=events}))
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,SaleCompletedThisRun=api.HasCompletedSale(),LastSaleAt=api.LastSaleAt,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -1278,16 +1289,6 @@ local CrackSell=createLiveCrackSell(Pickup)
 local function createMagnetUpgradeController(options)
     local ids={"MagPower","MagSpeed"};local cursor=1;local pending;local nextRequest=0
     local api={Running=true,Enabled=false,InFlight=false,Status="Paused",Confirmed=0}
-    function api.CanAffordRemaining()
-        local c=options.Context();local total=0
-        if not c.Owned then return false end
-        for _,id in ipairs(ids)do
-            local def=c.Tracks[id]
-            if not def or type(def.RemainingCost)~="number"then return false end
-            total+=def.RemainingCost
-        end
-        return c.Cash>=total,total
-    end
     function api.IsMaxed()
         local context=options.Context()
         if not context.Owned then return false end
@@ -1351,9 +1352,7 @@ local function createLiveMagnetUpgrades(CrackSell)
         local tracks={}
         for _,id in ipairs({"MagPower","MagSpeed"})do
             local def=Upgrades.ById[id];local cost=def.Costs[(levels[id]or 0)+1]
-            local remaining=0
-            for level=(levels[id]or 0)+1,#def.Costs do remaining+=Mode.price(def.Costs[level])end
-            tracks[id]={Max=#def.Costs,Cost=cost and Mode.price(cost),RemainingCost=remaining}
+            tracks[id]={Max=#def.Costs,Cost=cost and Mode.price(cost)}
         end
         return {Allowed=State.role()=="Game"and State.run("Phase")=="Mining"and not CrackSell.Busy,
             Owned=State.set("Tools").Magnet==true,Levels=levels,Tracks=tracks,Cash=tonumber(P:GetAttribute("Cash"))or 0}
@@ -1361,11 +1360,6 @@ local function createLiveMagnetUpgrades(CrackSell)
         events[#events+1]={Kind=kind,WallTimeMs=DateTime.now().UnixTimestampMillis,Data=data}
         if #events>80 then table.remove(events,1)end;dirty=true
     end})
-    CrackSell.StopCondition=function()
-        local funded,cost=api.CanAffordRemaining()
-        if funded then return cost==0 and"Both GEO-MAG upgrades are maxed — collection complete"
-            or"Money collected for all remaining GEO-MAG upgrades"end
-    end
     function api.Export()
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
@@ -1772,7 +1766,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
         if not Pickup.Enabled then Pickup.Start()end
         if not MagnetUpgrades.Enabled then MagnetUpgrades.Start()end
-        if(CrackSell.Continuous or not MagnetUpgrades.IsMaxed())and not CrackSell.Enabled then CrackSell.Start()end
+        if(CrackSell.Continuous or not CrackSell.HasCompletedSale())and not CrackSell.Enabled then CrackSell.Start()end
         record("RunManaged",{})
     end,Finish=function()
         if previous then
@@ -2282,7 +2276,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.15",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.16",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2354,7 +2348,7 @@ local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",St
     CrackSell.SetRepeatInterval(value)
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking & Selling to repeat while geodes are available, even after max upgrades. The repeat delay controls the wait between completed cycles. Otherwise uses the bag-change delay and stops after collecting enough money to fund all remaining GEO-MAG upgrades."})
+main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking & Selling to repeat while geodes are available, for repeated trips. The repeat delay controls the wait between completed cycles. Otherwise uses the bag-change delay and stops after the first confirmed sale each run, regardless of upgrade funding."})
 main:Section({Title="AFK Protection"})
 local antiAfkToggle=main:Toggle({Title="Anti-AFK",Value=false,Callback=function(value)
     if value then AntiAFK.Start()elseif AntiAFK.Enabled then AntiAFK.Stop()end
