@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.0"
+local geodeVersion="1.10.1"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -839,10 +839,10 @@ local function createCrackSellController(options)
     end
     local function hasBin(c)return c.BinCount>0 or c.BinValue>0 end
     local function approach(target)
-        local ok,reason=options.MoveTo(target)
+        local ok,reason,alreadyNear=options.MoveTo(target)
         if not ok then api.Stop(reason or("Could not approach "..target));return false end
         stage(target.."Approach","Approaching "..target:lower(),4)
-        readyAt=options.Now()+0.5
+        readyAt=options.Now()+(alreadyNear and 0 or .15)
         return true
     end
     local function proceed(c)
@@ -906,10 +906,10 @@ local function createCrackSellController(options)
             end
         elseif api.Stage=="CrackWait"then
             if cracked or c.CrateCount<=0 then
-                stage("LeaveWait","Leaving station",3);readyAt=now+0.3;options.Leave()
+                stage("LeaveWait","Leaving station",3);options.Leave()
             end
         elseif api.Stage=="LeaveWait"then
-            if not c.Cracking and now>=readyAt then
+            if not c.Cracking then
                 if hasBin(c)then approach("Sell")else completed(c)end
             end
         elseif api.Stage=="SellApproach"and now>=readyAt then
@@ -920,7 +920,7 @@ local function createCrackSellController(options)
             if sold or not hasBin(c)then
                 stage("SaleSettle","Confirming sale balance",2);readyAt=now+0.2
             end
-        elseif api.Stage=="SaleSettle"and now>=readyAt then
+        elseif api.Stage=="SaleSettle"and(c.Cash>saleBefore or now>=readyAt)then
             api.Sales+=1;api.CashGained+=math.max(0,c.Cash-saleBefore)
             completed(c)
         end
@@ -1006,7 +1006,7 @@ local function createLiveCrackSell(Pickup)
             station,entry=chooseStation();prompt=entry
         end
         if not prompt or not prompt.Parent or not prompt.Enabled then return false,target.." interaction unavailable"end
-        if near(prompt,r.Position)then return true end
+        if near(prompt,r.Position)then return true,nil,true end
         local combined=entry and entry.Parent.Position+Vector3.new(-3.6,1.5,6)
         local point=combined and near(prompt,combined)and combined or prompt.Parent.Position+Vector3.new(-4,1.5,0)
         r.CFrame=CFrame.new(point)*r.CFrame.Rotation
@@ -1070,7 +1070,7 @@ local function createLiveCrackSell(Pickup)
             local ok,err=pcall(api.Tick)
             if not ok then api.Stop("Cycle error: "..tostring(err))end
             if dirty and os.clock()>=nextSave then nextSave=os.clock()+2;api.Export()end
-            task.wait(.1)
+            task.wait(api.Busy and .03 or .1)
         end
     end)
     return api
@@ -2026,7 +2026,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.0",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.1",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
