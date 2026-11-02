@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.12"
+local geodeVersion="1.10.13"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1804,7 +1804,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             -- while entering mining so the held-fire gate has a valid target.
             if movementStage~="Mining"or not target then
                 local b=plan.Bands[band];local radius=b.Radius+1.5;local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-                target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
+                target=Vector3.new(plan.Origin.X,b.Y+self.Hover+4,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
             end
@@ -1857,7 +1857,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,NativeFireRecoveries=held.Recoveries,
                 WindowFocused=held.Focused,FocusChanges=held.FocusChanges,BackgroundKeepalives=held.Keepalives,LastRecoveryReason=held.LastRecoveryReason,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
-                FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=1.5,OrbitRadiansPerSecond=math.pi*2/7,OrbitLapSeconds=7,
+                FrameInterval=api.FrameInterval,MiningAimPitchOffset=0,OrbitHeightOffset=4,OrbitOutwardOffset=1.5,OrbitRadiansPerSecond=math.pi*2/7,OrbitLapSeconds=7,
                 CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
     end
@@ -1886,7 +1886,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if char~=ownedCharacter then release();return end
             if api.Stage=="Mining"and plan then
                 local b=plan.Bands[band];local radial=Vector3.new(math.cos(angle),0,math.sin(angle));local radius=b.Radius+1.5
-                target=Vector3.new(plan.Origin.X,b.Y+api.Hover,plan.Origin.Z)+radial*radius
+                target=Vector3.new(plan.Origin.X,b.Y+api.Hover+4,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
             end
@@ -1920,7 +1920,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         cam.CameraType=Enum.CameraType.Scriptable
         local desired=CFrame.lookAt(cameraPosition,focus)
         if api.Stage=="Mining"then
-            desired=desired*CFrame.Angles(math.rad(10),0,0)
             smoothedCameraRotation=smoothedCameraRotation or cam.CFrame.Rotation
             local frameDt=math.clamp(tonumber(dt)or 1/60,0,.1)
             local _,difference=smoothedCameraRotation:ToObjectSpace(desired.Rotation):ToAxisAngle()
@@ -2283,7 +2282,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.12",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.13",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
