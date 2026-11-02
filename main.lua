@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.1"
+local geodeVersion="1.10.2"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -804,7 +804,7 @@ local function createCrackSellController(options)
     function api.Start()
         if not api.Running or api.Enabled then return end
         local c=options.Context();lastBag=c.BagCount;observedIdentity=c.Identity
-        api.Enabled=true;armedAt=nil;api.Status="Waiting for first bag count change"
+        api.Enabled=true;api.PendingStopReason=nil;armedAt=nil;api.Status="Waiting for first bag count change"
     end
     function api.BagChanged(value)
         value=tonumber(value)or 0
@@ -816,7 +816,7 @@ local function createCrackSellController(options)
         end
     end
     function api.Stop(reason)
-        api.Enabled=false;finish(reason or"Paused")
+        api.Enabled=false;api.PendingStopReason=nil;finish(reason or"Paused")
         record("Stopped",{Reason=api.Status})
     end
     function api.Unload()if not api.Running then return end;api.Stop();api.Running=false end
@@ -826,7 +826,15 @@ local function createCrackSellController(options)
     end
     function api.SetContinuous(value)
         api.Continuous=value==true
+        if api.Continuous then api.PendingStopReason=nil end
         if not api.Busy then armedAt=nil end
+    end
+    function api.RequestStopAfterSale(reason)
+        if not api.Enabled or api.Continuous or api.PendingStopReason then return end
+        api.PendingStopReason=reason or"Final sale completed"
+        -- Finish any remaining bag/crate/bin even when pickups have stopped.
+        if not api.Busy and not armedAt then armedAt=options.Now()end
+        record("StopAfterSaleRequested",{Reason=api.PendingStopReason})
     end
     function api.SetRepeatInterval(value)
         value=tonumber(value)
@@ -855,7 +863,9 @@ local function createCrackSellController(options)
     local function completed(c)
         api.Cycles+=1
         record("CycleComplete",{Cycles=api.Cycles,Cash=c.Cash})
+        local stopReason=not api.Continuous and api.PendingStopReason
         finish("Cycle complete — returned to pickup position")
+        if stopReason then api.Stop(stopReason)end
     end
     function api.Tick()
         if not api.Running or not api.Enabled then return end
@@ -870,7 +880,10 @@ local function createCrackSellController(options)
         api.BagChanged(c.BagCount)
         local now=options.Now()
         if api.Stage=="Idle"then
-            if api.Continuous and not armedAt then armedAt=now end
+            if api.PendingStopReason and c.BagCount<=0 and c.CrateCount<=0 and not hasBin(c)then
+                api.Stop(api.PendingStopReason);return
+            end
+            if(api.Continuous or api.PendingStopReason)and not armedAt then armedAt=now end
             if not armedAt then api.Status="Waiting for first bag count change";return end
             local interval=api.Continuous and api.RepeatInterval or api.Interval
             if now<armedAt+interval then
@@ -1057,7 +1070,7 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,Events=events}))
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,PendingStopReason=api.PendingStopReason,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -1166,7 +1179,7 @@ local function createLiveMagnetUpgrades(CrackSell)
         while api.Running do
             local ok,err=pcall(function()
                 if CrackSell.Enabled and not CrackSell.Continuous and api.IsMaxed()then
-                    CrackSell.Stop("Both GEO-MAG upgrades are maxed — auto crack and sell disabled")
+                    CrackSell.RequestStopAfterSale("Both GEO-MAG upgrades are maxed — final collection complete")
                 end
                 api.Tick()
             end)
@@ -2026,7 +2039,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.1",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.2",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2095,7 +2108,7 @@ local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",St
     CrackSell.SetRepeatInterval(value)
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
-main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking & Selling to repeat while geodes are available, even after max upgrades. The repeat delay controls the wait between completed cycles. Otherwise uses the bag-change delay and stops at max upgrades."})
+main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking & Selling to repeat while geodes are available, even after max upgrades. The repeat delay controls the wait between completed cycles. Otherwise uses the bag-change delay and finishes collecting the money before stopping at max upgrades."})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
     if value then Escape.Start()else Escape.Stop()end
