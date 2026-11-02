@@ -95,6 +95,3 @@ A changed JobId establishes a server change. A changed RunStart in the same surv
 The pickup loop and camp sequence were exercised live. Egg single-triple and overlapping-triple requests were tested with permission; simultaneous requests received Busy rejections. Scheduling, candy limits, upgrades, cleanup, bag-change timing, queue lifecycle and loader recovery have focused local tests. Some controller integrations still need ordinary live observation.
 
 The raw game dump, player state, and diagnostic logs are kept local and are not included in this repository.
-
-
-The hub menu registers with the game cursor manager while open. Closing it restores the current first-person or farming camera lock while respecting other native menus. Cursor bindings are unique per window and removed on unload; the menu uses PlayerGui for native cursor compatibility.
