@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.7.1"
+local geodeVersion="1.7.2"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1265,8 +1265,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local Bench=require(C.Bench)
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate
     local collision={};local savedCamera;local previous
-    local plan,planDepth,profileCenter;local nextPlan=0;local angle=0;local band=1
-    local nextHit=0;local nextEquip=0;local progressItems=0;local progressAt=0
+    local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
+    local nextHit=0;local nextEquip=0
     local events={};local api
     local function record(kind,data)
         events[#events+1]={Kind=kind,At=os.time(),Depth=S.run("Depth"),Data=data}
@@ -1320,7 +1320,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if not previous.Upgrade then MagnetUpgrades.Stop()end
             if not previous.Pickup then Pickup.Stop()end
         end
-        previous=nil;plan=nil;planDepth=nil;profileCenter=nil
+        previous=nil;plan=nil;planDepth=nil;profileCenter=nil;pendingBand=nil
     end,Release=release,Update=function(self,c)
         local now=os.clock()
         if HUD.equipped()~="Magnet"then
@@ -1329,13 +1329,17 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
-            if c.Depth~=planDepth then plan=nil;profileCenter=nil;planDepth=c.Depth;band=1;angle=0;nextPlan=0;progressAt=now;progressItems=Pickup.Items end
-            if now>=nextPlan then plan=buildPlan();nextPlan=now+4 end
+            if c.Depth~=planDepth then plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;band=1;angle=0;nextPlan=0 end
+            -- Freeze the contour and height for the entire lap. Refit and move
+            -- to the next ring only after Heartbeat has completed all 360 degrees.
+            if pendingBand or(not plan and now>=nextPlan)then
+                plan=buildPlan();nextPlan=now+1
+                if plan then band=((pendingBand or band)-1)%#plan.Bands+1 end
+                pendingBand=nil
+            end
             if not plan then release();self.Status="Waiting for remaining mound targets";return end
             band=(band-1)%#plan.Bands+1
             self.RingCount=#plan.Bands;self.RingName=plan.Bands[band].Name
-            if Pickup.Items~=progressItems then progressItems=Pickup.Items;progressAt=now end
-            if now-progressAt>1.5 then angle+=math.pi/3;band=band%#plan.Bands+1;progressAt=now;record("StallAdvance",{Band=band})end
             local b=plan.Bands[band];local radius=ringPlanner.RadiusAt(b,angle)
             local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
             target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
@@ -1390,9 +1394,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             hum.AutoRotate=false
             root.CFrame=CFrame.lookAt(target,focus)
             root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
-            if api.Stage=="Mining"then
+            if api.Stage=="Mining"and not pendingBand then
                 angle+=math.min(dt,.1)*.45
-                if angle>=math.pi*2 then angle%=math.pi*2;api.Laps+=1;band=band%#plan.Bands+1 end
+                if angle>=math.pi*2 then
+                    angle=0;api.Laps+=1;pendingBand=band+1
+                    record("LapComplete",{Ring=band,Laps=api.Laps})
+                end
             end
         end)
         if not ok then api.Stop();record("MovementError",tostring(err))end
@@ -1749,7 +1756,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.7.1",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.7.2",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
