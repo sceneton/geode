@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.3"
+local geodeVersion="1.9.4"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1330,7 +1330,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local S=require(C.State)
     local Render=require(C.MoundRender)
     local Grid=require(MTG.Modules.Mound)
-    local Game=require(MTG.Config.Game)
     local ringPlanner=createPileRingPlanner()
     local Tools=require(C.Tools)
     local HUD=require(C.RunHUD)
@@ -1345,9 +1344,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
         end})
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate,cameraOutward,movementStage
-    local groundAim;local nextGroundAim=0;local smoothedCameraRotation
-    local groundOverlap=OverlapParams.new();groundOverlap.FilterType=Enum.RaycastFilterType.Include;groundOverlap.MaxParts=256
-    local groundRays=RaycastParams.new();groundRays.FilterType=Enum.RaycastFilterType.Include
+    local smoothedCameraRotation
     local collision={};local savedCamera;local previous
     local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
     local nextHit=0;local nextEquip=0
@@ -1370,7 +1367,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local function release()
         held.ReleaseFire()
         target=nil;focus=nil
-        groundAim=nil;cameraOutward=nil;movementStage=nil;smoothedCameraRotation=nil
+        cameraOutward=nil;movementStage=nil;smoothedCameraRotation=nil
         for part,value in pairs(collision)do if part.Parent then part.CanCollide=value end end
         collision={}
         if ownedHumanoid and ownedHumanoid.Parent then ownedHumanoid.AutoRotate=autoRotate end
@@ -1399,41 +1396,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         local fitted=ringPlanner.Build(columns,profileCenter,{Fractions={.12},Circular=true})
         if fitted and #fitted.Bands>0 then return fitted end
     end
-    local function findGroundAim()
-        if not plan or not target or not cameraOutward or not Render.Folder then return nil end
-        local stats=require(MTG.Modules.Stats).tool(S.ctx(),"Magnet")
-        local reach=math.min(90,Game.Collect.Reach+stats.Radius*1.6*Tools.radiusMult("Magnet"))
-        local inward=-cameraOutward
-        local origin=Render.origin();if not origin then return nil end
-        local center=Vector3.new(target.X,origin.Y+2,target.Z)+inward*(reach*.5)
-        groundOverlap.FilterDescendantsInstances={Render.Folder}
-        local parts=workspace:GetPartBoundsInBox(CFrame.lookAt(center,center+inward),Vector3.new(18,6,reach),groundOverlap)
-        local cameraPosition=target+cameraOutward*3+Vector3.new(0,2,0)
-        local candidates={}
-        for _,part in ipairs(parts)do
-            if part.Transparency<1 and part.CanQuery and part.Position.Y<=origin.Y+4 then
-                local col,id=Render.target(part)
-                local delta=part.Position-target
-                local horizontal=Vector3.new(delta.X,0,delta.Z)
-                if col~=nil and id~=nil and delta.Magnitude<=reach and horizontal.Magnitude>.01 then
-                    local alignment=horizontal.Unit:Dot(inward)
-                    if alignment>.94 then candidates[#candidates+1]={Part=part,Col=col,Id=id,Score=(1-alignment)*50+delta.Magnitude*.08+(part.Position.Y-origin.Y)*.5}end
-                end
-            end
-        end
-        table.sort(candidates,function(a,b)return a.Score<b.Score end)
-        local include={Render.Folder};local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
-        if body then include[#include+1]=body end
-        groundRays.FilterDescendantsInstances=include
-        for i=1,math.min(12,#candidates)do
-            local candidate=candidates[i]
-            local hit=workspace:Raycast(cameraPosition,(candidate.Part.Position-cameraPosition)*1.03,groundRays)
-            if hit and hit.Position.Y<=origin.Y+4.5 then
-                local col,id=Render.target(hit.Instance)
-                if col~=nil and id~=nil then return {Position=hit.Position,Col=col,Id=id,At=os.clock()}end
-            end
-        end
-    end
     api=createEndlessController({Context=function()
         local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
         return {Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
@@ -1461,7 +1423,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             self.Status="Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
-            if c.Depth~=planDepth then plan=nil;profileCenter=nil;pendingBand=nil;groundAim=nil;planDepth=c.Depth;band=1;nextPlan=now+.2 end
+            if c.Depth~=planDepth then plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;band=1;nextPlan=now+.2 end
             -- Full generated geometry pins one circular path for the whole depth.
             -- Depleted sectors cannot pull the radius/height inward or reset angle.
             if not plan and now>=nextPlan then plan=buildPlan();nextPlan=now+1 end
@@ -1479,12 +1441,6 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
                 focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
                 cameraOutward=radial
-            end
-            if now>=nextGroundAim and not UIKit.cursorFree()then
-                nextGroundAim=now+.25
-                local found=findGroundAim()
-                if found then groundAim=found
-                elseif groundAim and now-groundAim.At>.75 then groundAim=nil end
             end
         else
             held.ReleaseFire()
@@ -1520,11 +1476,10 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         stop()
         if not ok then record("NativeReleaseError",tostring(err))end
     end
-    api.NativeFireEvents=0;api.NativeItems=0;api.GroundFireEvents=0;api.FrameInterval=1/60
+    api.NativeFireEvents=0;api.NativeItems=0;api.FrameInterval=1/60
     local nativeFired=Tools.Fired.Event:Connect(function(tool)
         if held.Active and tool=="Magnet"then
             api.NativeFireEvents+=1
-            if api.AimMode=="Ground geodes"then api.GroundFireEvents+=1 end
         end
     end)
     local nativeFeedback=MTG.Remotes.Pick.OnClientEvent:Connect(function(id,tool,packed)
@@ -1538,7 +1493,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=10,OrbitOutwardOffset=4,OrbitRadiansPerSecond=math.pi*2/14,OrbitLapSeconds=14,
-                CircularOrbit=true,AimMode=api.AimMode,GroundFireEvents=api.GroundFireEvents,GroundAim=groundAim and{Column=groundAim.Col,Id=groundAim.Id},Events=events}))
+                CircularOrbit=true,AimMode=api.AimMode,Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
@@ -1593,16 +1548,9 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         if not direction then return end
         local cameraPosition=target+direction*3+Vector3.new(0,2,0)
         cam.CameraType=Enum.CameraType.Scriptable
-        local aim=focus;local trackingGround=false
-        if api.Stage=="Mining"and groundAim and os.clock()-groundAim.At<=.75 then
-            -- Keep a world point: native collection removes/reuses geode parts.
-            local toGround=groundAim.Position-cameraPosition
-            local horizontal=Vector3.new(toGround.X,0,toGround.Z)
-            if horizontal.Magnitude>1 and horizontal.Unit:Dot(-cameraOutward)>.94 then aim=groundAim.Position;trackingGround=true end
-        end
-        local desired=CFrame.lookAt(cameraPosition,aim)
+        local desired=CFrame.lookAt(cameraPosition,focus)
         if api.Stage=="Mining"then
-            if not trackingGround then desired=desired*CFrame.Angles(math.rad(10),0,0)end
+            desired=desired*CFrame.Angles(math.rad(10),0,0)
             smoothedCameraRotation=smoothedCameraRotation or cam.CFrame.Rotation
             local frameDt=math.clamp(tonumber(dt)or 1/60,0,.1)
             local _,difference=smoothedCameraRotation:ToObjectSpace(desired.Rotation):ToAxisAngle()
@@ -1610,7 +1558,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             smoothedCameraRotation=smoothedCameraRotation:Lerp(desired.Rotation,alpha)
             cam.CFrame=CFrame.new(cameraPosition)*smoothedCameraRotation
         else smoothedCameraRotation=nil;cam.CFrame=desired end
-        api.AimMode=trackingGround and"Ground geodes"or"Default"
+        api.AimMode=api.Stage=="Mining"and"AOE sweep"or"Boss"
     end)
     local unload=api.Unload
     function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
@@ -1965,7 +1913,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.3",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.4",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
