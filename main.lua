@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.4"
+local geodeVersion="1.10.5"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -788,6 +788,7 @@ local function createCrackSellController(options)
     local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0}
     local armedAt;local lastBag;local observedIdentity
     local deadline=0;local readyAt=0;local identity;local cracked=false;local sold=false;local saleBefore=0
+    local lastSaleIdentity;local lastSaleRun
     local function record(kind,data)if options.Record then pcall(options.Record,kind,data)end end
     local function stage(name,status,timeout)
         api.Stage=name;api.Status=status;deadline=options.Now()+(timeout or 4)
@@ -831,6 +832,11 @@ local function createCrackSellController(options)
     end
     function api.RequestStopAfterSale(reason)
         if not api.Enabled or api.Continuous or api.PendingStopReason then return end
+        local c=options.Context()
+        if not api.Busy and c.Valid and lastSaleIdentity~=nil and lastSaleIdentity==c.Identity and lastSaleRun==c.Run then
+            record("FinalSaleAlreadyCollected",{Sales=api.Sales,Cash=c.Cash,Run=c.Run})
+            api.Stop(reason or"Final sale completed");return
+        end
         api.PendingStopReason=reason or"Final sale completed"
         -- Finish any remaining bag/crate/bin even when pickups have stopped.
         if not api.Busy and not armedAt then armedAt=options.Now()end
@@ -935,6 +941,7 @@ local function createCrackSellController(options)
             end
         elseif api.Stage=="SaleSettle"and(c.Cash>saleBefore or now>=readyAt)then
             api.Sales+=1;api.CashGained+=math.max(0,c.Cash-saleBefore)
+            lastSaleIdentity=c.Identity;lastSaleRun=c.Run;api.LastSaleAt=now
             completed(c)
         end
     end
@@ -1035,7 +1042,8 @@ local function createLiveCrackSell(Pickup)
     local api=createCrackSellController({Now=os.clock,Context=function()
         refresh()
         local free=chooseStation()
-        return {Valid=valid(),Identity=identity,BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
+        local state=MTG:FindFirstChild("State")
+        return {Valid=valid(),Identity=identity,Run=state and state:GetAttribute("RunStart"),BagCount=tonumber(P:GetAttribute("BagCount"))or 0,
             CrateCount=camp and(tonumber(camp:GetAttribute("CrateCount"))or 0)or 0,
             BinCount=camp and(tonumber(camp:GetAttribute("BinCount"))or 0)or 0,
             BinValue=camp and(tonumber(camp:GetAttribute("BinValue"))or 0)or 0,
@@ -1070,7 +1078,7 @@ local function createLiveCrackSell(Pickup)
         local ok,err=pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_crack_sell_diagnostics.json",H:JSONEncode({Version=1,Enabled=api.Enabled,Stage=api.Stage,
-                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,PendingStopReason=api.PendingStopReason,Events=events}))
+                Status=api.Status,Cycles=api.Cycles,Sales=api.Sales,CashGained=api.CashGained,Interval=api.Interval,Continuous=api.Continuous,RepeatInterval=api.RepeatInterval,PendingStopReason=api.PendingStopReason,LastSaleAt=api.LastSaleAt,Events=events}))
         end)
         if ok then dirty=false end
         return ok,err
@@ -2039,7 +2047,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.4",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.5",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
