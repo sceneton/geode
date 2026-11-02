@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.7.2"
+local geodeVersion="1.8.0"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -535,7 +535,7 @@ connections[#connections+1]=remote.OnClientEvent:Connect(function(userId,tool,pa
     local count=typeof(packed)=="buffer"and math.floor(buffer.len(packed)/5)or 0
     -- Pets use the same remote; their collections must not confirm our tool request.
     if not pending or tool~=pending.Tool then
-        if api.Enabled then log("OtherPickupFeedback",{Tool=tool,Items=count})end
+        if api.Enabled and not api.NativeHeldOwner then log("OtherPickupFeedback",{Tool=tool,Items=count})end
         return
     end
     api.Feedback+=1;api.Items+=count
@@ -544,7 +544,7 @@ connections[#connections+1]=remote.OnClientEvent:Connect(function(userId,tool,pa
     if count>0 then pending=nil end
 end)
 connections[#connections+1]=player:GetAttributeChangedSignal("BagCount"):Connect(function()
-    log("BagChanged",{Count=player:GetAttribute("BagCount")})
+    if not api.NativeHeldOwner then log("BagChanged",{Count=player:GetAttribute("BagCount")})end
 end)
 task.spawn(function()
     local nextSave=0
@@ -557,6 +557,7 @@ task.spawn(function()
                 log("NoConfirmation",{Target=pending.Target.Key,WaitMs=(now-pending.At)*1000});pending=nil
             end
             if not api.Enabled then return end
+            if api.NativeHeldOwner then setStatus("Auto Endless: native held fire");return end
             if api.Suspended then setStatus("Auto Crack and Sell is active");return end
             local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
             local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
@@ -1249,6 +1250,36 @@ local function createPileRingPlanner()
     return planner
 end
 
+-- Owns only the native button source and an independent direct-pickup gate.
+local function createNativeHeldFire(options)
+    local api={Owned=false,Active=false,Starts=0,Releases=0}
+    local readyAt=0
+    function api.ReleaseFire()
+        if not api.Active then return end
+        api.Active=false;api.Releases+=1
+        options.SetUse(false,"button")
+    end
+    function api.Stop()
+        local ok,err=pcall(api.ReleaseFire)
+        if api.Owned then api.Owned=false;options.Suppress(false)end
+        if not ok then error(err)end
+    end
+    function api.Update(owner,allowed)
+        if not owner then api.Stop();return end
+        if not api.Owned then
+            options.Suppress(true);api.Owned=true
+            -- Let an existing direct request/feedback finish before held fire.
+            readyAt=options.Now()+.2
+        end
+        if not allowed then api.ReleaseFire();return end
+        if not api.Active and options.Now()>=readyAt then
+            api.Active=true;api.Starts+=1
+            options.SetUse(true,"button")
+        end
+    end
+    return api
+end
+
 local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local P=game:GetService("Players").LocalPlayer
     local R=game:GetService("RunService")
@@ -1263,6 +1294,13 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local Tools=require(C.Tools)
     local HUD=require(C.RunHUD)
     local Bench=require(C.Bench)
+    local UIKit=require(C.UIKit)
+    local held
+    held=createNativeHeldFire({Now=os.clock,SetUse=function(value,source)Tools.setUse(value,source)end,
+        Suppress=function(value)
+            if value then Pickup.NativeHeldOwner=held
+            elseif Pickup.NativeHeldOwner==held then Pickup.NativeHeldOwner=nil end
+        end})
     local target,focus,ownedCharacter,ownedHumanoid,autoRotate
     local collision={};local savedCamera;local previous
     local plan,planDepth,profileCenter,pendingBand;local nextPlan=0;local angle=0;local band=1
@@ -1273,6 +1311,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         if #events>100 then table.remove(events,1)end
     end
     local function release()
+        held.ReleaseFire()
         target=nil;focus=nil
         for part,value in pairs(collision)do if part.Parent then part.CanCollide=value end end
         collision={}
@@ -1345,6 +1384,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             target=Vector3.new(plan.Origin.X,b.Y+self.Hover,plan.Origin.Z)+radial*radius
             focus=Vector3.new(plan.Origin.X,b.Y,plan.Origin.Z)+radial*math.max(0,radius-7)
         else
+            held.ReleaseFire()
             if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Paused for Endless boss")end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
             if not body then release();self.Status="Waiting for boss body";return end
@@ -1371,14 +1411,40 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             end
         end
     end})
+    local stop=api.Stop
+    function api.Stop()
+        local ok,err=pcall(held.Stop);api.NativeHeldActive=false
+        stop()
+        if not ok then record("NativeReleaseError",tostring(err))end
+    end
+    api.NativeFireEvents=0;api.NativeItems=0;api.FrameInterval=1/60
+    local nativeFired=Tools.Fired.Event:Connect(function(tool)
+        if held.Active and tool=="Magnet"then api.NativeFireEvents+=1 end
+    end)
+    local nativeFeedback=MTG.Remotes.Pick.OnClientEvent:Connect(function(id,tool,packed)
+        if held.Active and id==P.UserId and tool=="Magnet"and typeof(packed)=="buffer"then api.NativeItems+=math.floor(buffer.len(packed)/5)end
+    end)
     function api.Export()
         return pcall(function()
             if not isfolder("Geode")then makefolder("Geode")end
             writefile("Geode/auto_endless_diagnostics.json",H:JSONEncode({Enabled=api.Enabled,Stage=api.Stage,Status=api.Status,Hover=api.Hover,
-                Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,Events=events}))
+                Laps=api.Laps,Hits=api.Hits,WeakHits=api.WeakHits,Depth=S.run("Depth"),Phase=S.run("Phase"),Profile=plan,Ring=band,
+                NativeHeldActive=held.Active,NativeFireEvents=api.NativeFireEvents,NativeItems=api.NativeItems,HeldStarts=held.Starts,HeldReleases=held.Releases,
+                FrameInterval=api.FrameInterval,Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
+        local holdOK,holdError=pcall(function()
+            api.FrameInterval=api.FrameInterval*.95+math.clamp(dt,.001,.1)*.05
+            local char=P.Character;local hum=char and char:FindFirstChildOfClass("Humanoid")
+            local owner=api.Enabled and S.role()=="Game"and S.run("Mode")=="Endless"and S.run("Ended",false)~=true and S.run("EndlessOver",false)~=true
+            local allowed=owner and api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true
+                and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
+                and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
+            held.Update(owner,allowed)
+            api.NativeHeldActive=held.Active
+        end)
+        if not holdOK then api.Stop();api.Status="Native fire error: "..tostring(holdError);record("NativeFireError",tostring(holdError));return end
         if CrackSell.Busy or Bench.isCracking()then release();return end
         if not api.Enabled or not target then return end
         local ok,err=pcall(function()
@@ -1414,7 +1480,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         cam.CFrame=CFrame.lookAt(target+direction*3+Vector3.new(0,2,0),focus)
     end)
     local unload=api.Unload
-    function api.Unload()unload();movement:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
+    function api.Unload()unload();movement:Disconnect();nativeFired:Disconnect();nativeFeedback:Disconnect();R:UnbindFromRenderStep(renderName);api.Export()end
     task.spawn(function()
         while api.Running do
             local ok,err=pcall(function()
@@ -1508,7 +1574,7 @@ local function createGeodePerkRanker()
                 reason="Tool speed still reduces the actual pickup interval"
             elseif not bonus.Power and not bonus.PileDamage then
                 score=(id=="Frenzy"and c.BagCapacity~=-1)and 32 or 0
-                reason="Speed is already capped by the hub's 50 ms request floor"
+                reason="Speed is already limited by the active firing loop's timing floor"
             end
         end
         return score,reason
@@ -1579,7 +1645,7 @@ local function createAutoPerkController(options)
     return api
 end
 
-local function createLiveAutoPerks(MagnetUpgrades)
+local function createLiveAutoPerks(MagnetUpgrades,Endless)
     local P=game:GetService("Players").LocalPlayer
     local H=game:GetService("HttpService")
     local M=game:GetService("ReplicatedStorage").MTG
@@ -1612,7 +1678,8 @@ local function createLiveAutoPerks(MagnetUpgrades)
             Test=offer and offer.Test,Cards=offer and offer.Cards,Until=offer and tonumber(offer.Until),ServerNow=workspace:GetServerTimeNow(),
             Owned=owned,Mods=ctx.Mods,Depth=depth,OilLeft=tonumber(S.run("LanternLeft",0))or 0,OilMax=E.Lantern.Max,
             LanternRate=tonumber(S.run("LanternRate",1))or 1,OilPerDepth=(owned.OilFlask or 0)*15,DepthSeconds=depthSeconds,
-            BagCapacity=P:GetAttribute("BagCap"),NativeCooldown=tool.Cooldown*Tools.paceMult("Magnet"),RequestFloor=.05,
+            BagCapacity=P:GetAttribute("BagCap"),NativeCooldown=tool.Cooldown*Tools.paceMult("Magnet"),
+            RequestFloor=Endless and Endless.Enabled and S.run("Mode")=="Endless"and math.clamp(Endless.FrameInterval or 1/60,.001,.1)or .05,
             CrackPowerPercent=delta>0 and power*100/delta or 100,MagnetMaxed=MagnetUpgrades.IsMaxed()}
     end
     local function choose(cards,c)return ranker.Choose(cards,E.PerkById,c,function(def,rarity)return E.cardStacks(def,rarity)end)end
@@ -1656,7 +1723,7 @@ local function createLiveAutoPerks(MagnetUpgrades)
     return api
 end
 
-local AutoPerks=createLiveAutoPerks(MagnetUpgrades)
+local AutoPerks=createLiveAutoPerks(MagnetUpgrades,Endless)
 local function createGeodeTeleportContinuation(options)
     local api={Enabled=true,Running=true,Installed=false}
     function api.Save()
@@ -1756,7 +1823,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.7.2",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.8.0",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -1905,7 +1972,7 @@ task.spawn(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
         perkStatus:SetDesc(AutoPerks.Status.."\nChoices sent: "..AutoPerks.Requests.." | Confirmed: "..AutoPerks.Confirmed)
         if endlessToggle.Value~=Endless.Enabled then endlessToggle:Set(Endless.Enabled)end
-        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
+        endlessStatus:SetDesc(Endless.Status.."\nRing: "..tostring(Endless.RingName or"Waiting").." / "..tostring(Endless.RingCount or 0).." | Hover: "..Endless.Hover.." studs\nHeld fire: "..(Endless.NativeHeldActive and"Active"or"Paused").." | Native shots: "..Endless.NativeFireEvents.." | Items: "..Endless.NativeItems.."\nLaps: "..Endless.Laps.." | Boss hits: "..Endless.Hits.." | Weak hits: "..Endless.WeakHits)
         if escapeToggle.Value~=Escape.Enabled then escapeToggle:Set(Escape.Enabled)end
         escapeStatus:SetDesc(Escape.Status.."\nExit moves this round: "..Escape.Attempts)
         if pickupToggle.Value~=Pickup.Enabled then pickupToggle:Set(Pickup.Enabled)end
