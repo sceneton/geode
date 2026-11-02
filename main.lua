@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.9.5"
+local geodeVersion="1.9.6"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1121,20 +1121,31 @@ end
 local function createLiveEscape(CrackSell)
     local player=game:GetService("Players").LocalPlayer
     local State=require(player.PlayerScripts.MTGClient.State)
-    local exit=Vector3.new(702.1797485351562,3.2499985694885254,80.727294921875)
+    local function destination(root,humanoid)
+        local map=workspace:FindFirstChild("CaveMap")
+        local lift=map and map:FindFirstChild("Lift")
+        local floor=lift and lift:FindFirstChild("Floor")
+        local inside=lift and lift:FindFirstChild("Inside")
+        local base=floor and floor:IsA("BasePart")and floor or inside
+        if not base or not base:IsA("BasePart")then return nil end
+        local clearance=humanoid and humanoid.HipHeight+(root and root.Size.Y/2 or 1)or 3
+        return base.CFrame:PointToWorldSpace(Vector3.new(0,(base==floor and base.Size.Y/2 or 0)+clearance,0))
+    end
     local api=createEscapeController({Now=os.clock,Context=function()
         local character=player.Character
         local root=character and character:FindFirstChild("HumanoidRootPart")
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local exit=destination(root,humanoid)
         return {Identity=character,Run=State.run("RunStart",""),
-            Ready=State.role()=="Game"and State.run("Mode","")~="Endless"and State.run("Phase","")=="Escape"and State.run("LiftOpen",false)==true,
+            Ready=exit~=nil and State.role()=="Game"and State.run("Mode","")~="Endless"and State.run("Phase","")=="Escape"and State.run("LiftOpen",false)==true,
             Escaped=player:GetAttribute("Escaped")==true,Ended=State.run("Ended",false)==true,
             Alive=root~=nil and humanoid~=nil and humanoid.Health>0,
-            Distance=root and(root.Position-exit).Magnitude or math.huge}
+            Distance=root and exit and(root.Position-exit).Magnitude or math.huge}
     end,Move=function()
         if CrackSell.Enabled or CrackSell.Busy then CrackSell.Stop("Stopped for auto escape")end
         local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
         assert(root,"Character root unavailable")
+        local exit=assert(destination(root,player.Character:FindFirstChildOfClass("Humanoid")),"Current map lift unavailable")
         root.CFrame=CFrame.new(exit)*root.CFrame.Rotation
         root.AssemblyLinearVelocity=Vector3.zero
         root.AssemblyAngularVelocity=Vector3.zero
@@ -1913,7 +1924,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.9.5",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.9.6",Window=Window,Pickup=Pickup,Eggs=Eggs,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
