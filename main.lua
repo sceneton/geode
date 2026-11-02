@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.10"
+local geodeVersion="1.10.11"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -136,7 +136,7 @@ local function createNativeUI()
                 local auto=data.__elements.AutoLoadConfig
                 if startup and auto and auto.value==false then return false,"Auto-load disabled"end
                 -- Parameters and continuation settings precede automation toggles.
-                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoBossFight=true,AutoEndless=true,AutoSelectPerk=true,ExperimentalLoadingRemoval=true}
+                local automation={AutoGeodePickup=true,AutoOpenHauntedEgg=true,AutoCrackAndSell=true,AutoUpgradeMagnet=true,AutoEscape=true,AutoBossFight=true,AntiAFK=true,AutoEndless=true,AutoSelectPerk=true,ExperimentalLoadingRemoval=true}
                 for pass=1,2 do
                     for _,key in ipairs(self.Order)do
                         if (automation[key]==true)==(pass==2)and not(skipAutomation and automation[key])then
@@ -909,6 +909,52 @@ local function createLiveLoadingRemoval()
 end
 
 local LoadingRemoval=createLiveLoadingRemoval()
+local function createAntiAfkController(options)
+    local api={Running=true,Enabled=false,Busy=false,Status="Off",IdleEvents=0,Pulses=0}
+    local connection;local lastAt=-math.huge
+    function api.Stop(reason)
+        api.Enabled=false
+        if connection then connection:Disconnect();connection=nil end
+        api.Status=reason or"Off"
+    end
+    function api.OnIdle(seconds)
+        if not api.Running or not api.Enabled then return end
+        api.IdleEvents+=1
+        local now=options.Now()
+        if api.Busy or now-lastAt<20 then return end
+        api.Busy=true;lastAt=now
+        local ok,err=pcall(options.Pulse)
+        api.Busy=false
+        if not ok then api.Stop("Anti-AFK input failed: "..tostring(err));return end
+        api.Pulses+=1;api.LastPulseAt=now;api.LastIdleSeconds=tonumber(seconds)
+        if api.Enabled then api.Status="Enabled — idle input sent"end
+    end
+    function api.Start()
+        if not api.Running or api.Enabled then return end
+        if api.Busy then api.Status="Waiting for previous idle response";return end
+        api.Enabled=true;lastAt=-math.huge
+        local ok,result=pcall(options.ConnectIdle,api.OnIdle)
+        if not ok then api.Stop("Anti-AFK unavailable: "..tostring(result));return end
+        connection=result;api.Status="Enabled — waiting for Roblox idle events"
+    end
+    function api.Unload()api.Stop();api.Running=false end
+    return api
+end
+
+local function createLiveAntiAfk()
+    local player=game:GetService("Players").LocalPlayer
+    return createAntiAfkController({Now=os.clock,ConnectIdle=function(callback)return player.Idled:Connect(callback)end,
+        Pulse=function()
+            local input=game:GetService("VirtualInputManager")
+            local ok,err=pcall(function()input:SendKeyEvent(true,Enum.KeyCode.F15,false,game)end)
+            -- Always release, including after an uncertain key-down response.
+            local released,releaseError=pcall(function()input:SendKeyEvent(false,Enum.KeyCode.F15,false,game)end)
+            if not ok then error(err)end
+            if not released then error(releaseError)end
+        end})
+end
+
+local AntiAFK=createLiveAntiAfk()
 local function createCrackSellController(options)
     local api={Running=true,Enabled=false,Busy=false,Stage="Idle",Status="Paused",Interval=10,Continuous=false,RepeatInterval=10,Cycles=0,Sales=0,CashGained=0}
     local armedAt;local lastBag;local observedIdentity
@@ -2237,12 +2283,13 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.10",Window=Window,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.11",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
     if not Hub.Running then return end
     Hub.Running=false
+    AntiAFK.Unload()
     LoadingRemoval.Unload()
     ClassMutations.Unload()
     AutoPerks.Unload()
@@ -2309,6 +2356,12 @@ local repeatInterval=main:Slider({Title="Repeat Crack & Sell Delay (seconds)",St
 end})
 local crackStatus=main:Paragraph({Title="Crack & Sell Status",Desc="Paused — returns to your pickup position after each cycle."})
 main:Paragraph({Title="Crack & Sell Timing",Desc="Enable Auto Crack and Sell plus Keep Cracking & Selling to repeat while geodes are available, even after max upgrades. The repeat delay controls the wait between completed cycles. Otherwise uses the bag-change delay and stops after collecting enough money to fund all remaining GEO-MAG upgrades."})
+main:Section({Title="AFK Protection"})
+local antiAfkToggle=main:Toggle({Title="Anti-AFK",Value=false,Callback=function(value)
+    if value then AntiAFK.Start()elseif AntiAFK.Enabled then AntiAFK.Stop()end
+end})
+main:Paragraph({Title="Anti-AFK Behavior",Desc="Responds to Roblox idle events with an unbound F15 key tap. No mouse clicks, movement or camera changes. Save Config to restore after reloading; enabled state also carries through queued teleports."})
+local antiAfkStatus=main:Paragraph({Title="Anti-AFK Status",Desc="Off"})
 main:Section({Title="Boss Fight"})
 local bossToggle=main:Toggle({Title="Auto Boss Fight",Value=false,Callback=function(value)
     if value then Endless.StartBoss()else Endless.StopBoss()end
@@ -2369,6 +2422,7 @@ config:Register("CrackSellRepeatInterval",repeatInterval)
 config:Register("AutoUpgradeMagnet",upgradeToggle)
 config:Register("AutoEscape",escapeToggle)
 config:Register("AutoBossFight",bossToggle)
+config:Register("AntiAFK",antiAfkToggle)
 config:Register("EndlessHover",hoverHeight)
 config:Register("AutoEndless",endlessToggle)
 config:Register("AutoSelectPerk",perkToggle)
@@ -2395,7 +2449,7 @@ end})
 config:Register("QueueOnTeleport",queueToggle)
 continuation=createLiveGeodeTeleport(function()
     return {Pickup=Pickup.Enabled,Range=Pickup.MaxRange,Eggs=Eggs.Enabled,CrackSell=CrackSell.Enabled,
-        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,AutoBossFight=Endless.BossEnabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,LoadingRemoval=LoadingRemoval.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
+        BagDelay=CrackSell.Interval,CrackSellContinuous=CrackSell.Continuous,CrackSellRepeatInterval=CrackSell.RepeatInterval,MagnetUpgrades=MagnetUpgrades.Enabled,Escape=Escape.Enabled,AutoBossFight=Endless.BossEnabled,AntiAFK=AntiAFK.Enabled,Endless=Endless.Enabled,EndlessHover=Endless.Hover,AutoPerks=AutoPerks.Enabled,LoadingRemoval=LoadingRemoval.Enabled,MenuKey=Window.ToggleKey.Name,MenuClosed=Window.Closed}
 end)
 Hub.Teleport=continuation
 settings:Button({Title="Unload Hub",Callback=Hub.Unload})
@@ -2419,6 +2473,7 @@ if type(resumed)=="table"and resumed.GameId==10770110947 then
     bossToggle:Set(resumed.AutoBossFight==true)
     perkToggle:Set(resumed.AutoPerks==true)
     loadingToggle:Set(resumed.LoadingRemoval==true)
+    antiAfkToggle:Set(resumed.AntiAFK==true)
     if resumed.MenuClosed then Window:Close()end
 end
 continuation.Save()
@@ -2429,6 +2484,8 @@ task.spawn(function()
     while Hub.Running and env.GeodeHub==Hub and not Window.Destroyed do
         local uiOK,uiError=pcall(function()
         if perkToggle.Value~=AutoPerks.Enabled then perkToggle:Set(AutoPerks.Enabled)end
+        if antiAfkToggle.Value~=AntiAFK.Enabled then antiAfkToggle:Set(AntiAFK.Enabled)end
+        antiAfkStatus:SetDesc(AntiAFK.Status.."\nIdle input pulses: "..AntiAFK.Pulses)
         if loadingToggle.Value~=LoadingRemoval.Enabled then loadingToggle:Set(LoadingRemoval.Enabled)end
         loadingStatus:SetDesc(LoadingRemoval.Status.."\nNative intros skipped: "..LoadingRemoval.IntrosSkipped.." | Current loader timer adjusted: "..tostring(LoadingRemoval.LoadingTimerAdjusted==true))
         if mutationToggle.Value~=ClassMutations.Enabled then mutationToggle:Set(ClassMutations.Enabled)end
