@@ -183,7 +183,6 @@ local function createNativeUI()
         local w={Closed=false,Destroyed=false,Connections={},Tabs={},ToggleKey=Enum.KeyCode.RightControl}
         self.Window=w
         local parent=game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
-        if type(gethui)=="function" then local ok,value=pcall(gethui); if ok and value then parent=value end end
         local gui=node("ScreenGui",parent,{Name="GeodeNativeHub",ResetOnSpawn=false,IgnoreGuiInset=false,DisplayOrder=10000,ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
         w.Gui=gui
         local root=node("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(640,480),BackgroundColor3=colors.bg,BorderSizePixel=0})
