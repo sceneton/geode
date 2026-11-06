@@ -4,7 +4,7 @@ if game.GameId~=10770110947 then warn("[Geode Hub] This script is for Crack the 
 local env=getgenv()
 -- Claim startup before module initialization can yield. The shared instance also
 -- covers queued chunks whose executor globals are isolated from one another.
-local geodeVersion="1.10.16"
+local geodeVersion="1.10.17"
 local geodePlayer=game:GetService("Players").LocalPlayer
 if not geodePlayer then error("Local player unavailable")end
 local geodeGui=geodePlayer:WaitForChild("PlayerGui",15)
@@ -1500,6 +1500,38 @@ local function createEndlessController(options)
     return api
 end
 
+-- Pure target planning; native Tools owns firing, combo timing and hit validation.
+local function planGeodeBossTarget(c)
+    local body=c.Body
+    if not body then return nil end
+    local def=c.Def or{}
+    local surface=body.Size.X/2
+    local shell=def.SpotLook and def.SpotLook.Seat and def.SpotLook.Seat.Shell
+    local reach=math.max(1,c.Reach or 14)
+    local gap=math.clamp(c.Hover or 6.5,2,math.max(2,reach-2))
+    -- Read every server-configured slot; newer bosses have more than four.
+    for _,spot in ipairs(c.Spots or{})do
+        if spot.Id~=0 and spot.Hits>0 and spot.Direction and spot.Direction.Magnitude>.5 then
+            local dir=spot.Direction.Unit
+            local seat=spot.Seat and spot.Seat>0 and spot.Seat or shell or surface
+            local at=body.Position+dir*seat
+            return {Target=at+dir*gap-Vector3.new(0,1.5,0),Focus=at,SpotId=spot.Id,
+                Kind="WeakPoint",Gap=gap,Reach=reach}
+        end
+    end
+    -- Irregular bosses expose named collision parts rather than a body sphere.
+    if c.NearestHit then
+        local at=c.NearestHit
+        local delta=at-body.Position
+        local flat=Vector3.new(delta.X,0,delta.Z)
+        local dir=flat.Magnitude>.01 and flat.Unit or c.Radial
+        return {Target=at+dir*gap,Focus=at,Kind="HitPart",Gap=gap,Reach=reach}
+    end
+    local radius=def.HitRadius or surface
+    return {Target=body.Position+c.Radial*(radius+gap),Focus=body.Position,
+        Kind="Body",Gap=gap,Reach=reach}
+end
+
 -- Fits horizontal contours to all active column stacks. No Roblox dependencies.
 local function createPileRingPlanner()
     local planner={}
@@ -1687,6 +1719,16 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     local UIKit=require(C.UIKit)
     local Mastery=require(C.Mastery)
     local MasteryHUD=require(C.MasteryHUD)
+    local Gear=require(MTG.Config.Gear)
+    local GameConfig=require(MTG.Config.Game)
+    local BossDefs=require(MTG.Config.Bosses).Defs
+    local BossReach=require(MTG.Modules.BossReach)
+    local weapon=Gear.Weapon
+    local bossTool=weapon and weapon.Id or "Magnet"
+    local maxSpots=4
+    for _,count in pairs(GameConfig.Mother.WeakSpot.Count or{})do maxSpots=math.max(maxSpots,count)end
+    for _,def in pairs(BossDefs)do maxSpots=math.max(maxSpots,#(def.Spots or{}))end
+    local function desiredTool()return S.run("Phase")=="Mother"and bossTool or "Magnet"end
     local held;local api
     held=createNativeHeldFire({Now=os.clock,SetUse=function(value,source)Tools.setUse(value,source)end,
         Progress=function()return api and(api.NativeFireEvents+api.Hits)or 0 end,
@@ -1760,7 +1802,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         return {Game=S.role()=="Game",Endless=S.role()=="Game"and S.run("Mode","")=="Endless",Phase=S.run("Phase"),
             Run=S.run("RunStart"),Depth=S.run("Depth"),HP=S.run("MotherHP",0),Ended=S.run("Ended",false)==true or S.run("EndlessOver",false)==true,
             Alive=hum~=nil and hum.Health>0 and char:FindFirstChild("HumanoidRootPart")~=nil,
-            Owned=S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking(),
+            Owned=S.run("Phase")=="Mother"and HUD.slot(bossTool)~=nil or S.set("Tools").Magnet==true,CampBusy=CrackSell.Busy or Bench.isCracking(),
             CombatBlocked=Tools.Blocked or Tools.DevPaused or UIKit.cursorFree()or P:GetAttribute("PerkPending")==true}
     end,Manage=function()
         if not previous then previous={Pickup=Pickup.Enabled,Upgrade=MagnetUpgrades.Enabled,Crack=CrackSell.Enabled}end
@@ -1777,10 +1819,11 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
         previous=nil;plan=nil;planDepth=nil;profileCenter=nil;pendingBand=nil
     end,Release=release,Update=function(self,c)
         local now=os.clock()
-        if HUD.equipped()~="Magnet"then
+        local tool=desiredTool()
+        if HUD.equipped()~=tool then
             release()
-            if now>=nextEquip then nextEquip=now+1;HUD.selectTool("Magnet")end
-            self.Status="Equipping GEO-MAG 3000";return
+            if now>=nextEquip then nextEquip=now+.25;HUD.selectTool(tool)end
+            self.Status=tool==bossTool and c.Phase=="Mother"and "Equipping FIGHT slot"or "Equipping GEO-MAG 3000";return
         end
         if c.Phase=="Mining"then
             if c.Depth~=planDepth then plan=nil;profileCenter=nil;pendingBand=nil;planDepth=c.Depth;band=1;nextPlan=now+.2 end
@@ -1806,21 +1849,24 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             if api.Enabled and S.run("Mode")=="Endless"and(CrackSell.Enabled or CrackSell.Busy)then CrackSell.Stop("Paused for boss fight")end
             local map=workspace:FindFirstChild("CaveMap");local mother=map and map:FindFirstChild("Mother");local body=mother and mother:FindFirstChild("Body")
             if not body then release();self.Status="Waiting for boss body";return end
-            local at=Vector3.zero;local hasWeak=false
-            for i=1,4 do
+            local def=BossDefs[S.run("MotherSkin","")]
+            local spots={}
+            for i=1,maxSpots do
                 local dir=S.run("MotherSpot"..i)
-                if typeof(dir)=="Vector3"and dir.Magnitude>.5 and S.run("MotherSpot"..i.."Id",0)~=0 and S.run("MotherSpot"..i.."Hits",0)>0 then
-                    hasWeak=true
-                    at=body.Position+dir.Unit*(body.Size.X/2)
-                    target=body.Position+dir.Unit*(body.Size.X/2+self.Hover)-Vector3.new(0,1.5,0)
-                    focus=at
-                    break
-                end
+                spots[#spots+1]={Direction=typeof(dir)=="Vector3"and dir or nil,
+                    Id=S.run("MotherSpot"..i.."Id",0),Hits=S.run("MotherSpot"..i.."Hits",0),Seat=S.run("MotherSpot"..i.."Seat",0)}
             end
-            if not hasWeak then
-                local radial=Vector3.new(math.cos(angle),0,math.sin(angle))
-                target=body.Position+radial*(body.Size.X/2+self.Hover);focus=body.Position
-            end
+            local style=weapon and weapon.Styles[P:GetAttribute("BestCracker")or"Chisel"]
+            local reach=style and style.Reach+(weapon.BossReach or 0)or 14
+            local nearest
+            local root=P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+            if def and def.HitParts and root then nearest=BossReach.nearest(BossReach.parts(mother,def.HitParts),root.Position)end
+            local result=planGeodeBossTarget({Body=body,Def=def,Spots=spots,Hover=self.Hover,Reach=reach,
+                Radial=Vector3.new(math.cos(angle),0,math.sin(angle)),NearestHit=nearest})
+            if not result then release();self.Status="Waiting for boss target";return end
+            target,focus=result.Target,result.Focus
+            self.BossTargetKind=result.Kind;self.BossSpotId=result.SpotId;self.BossReach=reach;self.BossTool=tool;self.BossSkin=S.run("MotherSkin","");self.BossName=S.run("BossName","")
+            self.Status=(result.Kind=="WeakPoint"and "Attacking weak point"or"Attacking boss").." with FIGHT slot"
         end
     end})
     local stop=api.Stop
@@ -1831,12 +1877,12 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
     end
     api.NativeFireEvents=0;api.NativeItems=0;api.FrameInterval=1/60
     local nativeFired=Tools.Fired.Event:Connect(function(tool)
-        if held.Active and tool=="Magnet"then
+        if held.Active and tool==desiredTool()then
             api.NativeFireEvents+=1
         end
     end)
     local nativeBossHit=Tools.MotherHit.Event:Connect(function(_,_,tool,spot)
-        if held.Active and api.Stage=="Boss"and tool=="Magnet"then
+        if held.Active and api.Stage=="Boss"and tool==bossTool then
             api.Hits+=1;if spot~=nil and spot~=0 then api.WeakHits+=1 end
         end
     end)
@@ -1852,7 +1898,8 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
                 WindowFocused=held.Focused,FocusChanges=held.FocusChanges,BackgroundKeepalives=held.Keepalives,LastRecoveryReason=held.LastRecoveryReason,
                 AbilityRequests=ability.Requests,AbilityConfirmed=ability.Confirmed,AbilityStatus=ability.Status,AbilityStats=ability.Stats,
                 FrameInterval=api.FrameInterval,MiningAimPitchOffset=0,OrbitHeightOffset=10,OrbitOutwardOffset=-.5,OrbitRadiansPerSecond=math.pi*2/7,OrbitLapSeconds=7,
-                CircularOrbit=true,AimMode=api.AimMode,Events=events}))
+                CircularOrbit=true,AimMode=api.AimMode,BossTool=api.BossTool,BossSkin=api.BossSkin,BossName=api.BossName,
+                BossTargetKind=api.BossTargetKind,BossSpotId=api.BossSpotId,BossReach=api.BossReach,Events=events}))
         end)
     end
     local movement=R.Heartbeat:Connect(function(dt)
@@ -1864,7 +1911,7 @@ local function createLiveEndless(Pickup,CrackSell,MagnetUpgrades)
             local mining=api.Enabled and S.run("Mode")=="Endless"and api.Stage=="Mining"and S.run("Phase")=="Mining"and S.run("MoundLocked",false)~=true and plan~=nil
             local boss=api.Stage=="Boss"and S.run("Phase")=="Mother"and S.run("MotherHP",0)>0
             local allowed=owner and(mining or boss)and movementStage==api.Stage
-                and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()=="Magnet"and not CrackSell.Busy and not Bench.isCracking()
+                and target~=nil and hum~=nil and hum.Health>0 and HUD.equipped()==desiredTool()and not CrackSell.Busy and not Bench.isCracking()
                 and not Pickup.Suspended and not UIKit.cursorFree()and P:GetAttribute("PerkPending")~=true and not Tools.Blocked and not Tools.DevPaused
             held.Update(owner,allowed)
             api.NativeHeldActive=held.Active
@@ -2276,7 +2323,7 @@ end
 local NativeUI=createNativeUI()
 local Window=NativeUI:CreateWindow({Title="Beyy Hub | Crack the Geode!",Folder="GeodeHub"})
 Window:SetToggleKey(Enum.KeyCode.RightControl)
-local Hub={Running=true,Version="1.10.16",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
+local Hub={Running=true,Version="1.10.17",Window=Window,AntiAFK=AntiAFK,Pickup=Pickup,Eggs=Eggs,ClassMutations=ClassMutations,LoadingRemoval=LoadingRemoval,CrackSell=CrackSell,MagnetUpgrades=MagnetUpgrades,Escape=Escape,Endless=Endless,AutoPerks=AutoPerks}
 Window.Gui:SetAttribute("GeodeSessionVersion",Hub.Version)
 env.GeodeHub=Hub
 function Hub.Unload()
@@ -2359,7 +2406,7 @@ main:Section({Title="Boss Fight"})
 local bossToggle=main:Toggle({Title="Auto Boss Fight",Value=false,Callback=function(value)
     if value then Endless.StartBoss()else Endless.StopBoss()end
 end})
-main:Paragraph({Title="Boss Fight Behavior",Desc="Equips the owned GEO-MAG 3000, holds fire on the boss, and moves/aims at live weak points. Returns to normal hits between openings. Waits outside boss combat; does not enable mining or camp automation. Shares one combat controller with Auto Endless to avoid overlapping movement and attacks."})
+main:Paragraph({Title="Boss Fight Behavior",Desc="Uses the native FIGHT slot and your best cracker for boss damage. Follows live weak points using their server positions, then attacks the boss's hittable parts between openings. Auto Endless switches back to GEO-MAG for mining. Shares one combat controller to avoid overlapping movement and attacks."})
 local bossStatus=main:Paragraph({Title="Boss Fight Status",Desc="Paused"})
 main:Section({Title="Escape"})
 local escapeToggle=main:Toggle({Title="Auto Escape",Value=false,Callback=function(value)
@@ -2523,3 +2570,4 @@ if not success then
 end
 if not result then releaseGeodeBoot()end
 return result -- return Hub is inside the protected constructor
+
