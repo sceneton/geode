@@ -98,3 +98,13 @@ A changed JobId establishes a server change. A changed RunStart in the same surv
 The pickup loop and camp sequence were exercised live. Egg single-triple and overlapping-triple requests were tested with permission; simultaneous requests received Busy rejections. Scheduling, candy limits, upgrades, cleanup, bag-change timing, queue lifecycle and loader recovery have focused local tests. Some controller integrations still need ordinary live observation.
 
 The raw game dump, player state, and diagnostic logs are kept local and are not included in this repository.
+
+## Version 1.10.17 — updated native boss combat
+
+Auto Boss Fight and the boss portion of Auto Endless use the native FIGHT slot (Weapon), whose style follows the game's BestCracker setting. Mining still uses GEO-MAG. The updated game locks collecting tools during boss combat; the previous controller repeatedly tried to equip Magnet and could never begin its attack loop.
+
+Boss positioning now reads all configured weak-point slots, their replicated seat distances, and boss-specific shell seats. Normal-hit positioning uses the boss definition's HitRadius or its named HitParts through the native BossReach helper. Standoff is capped inside the current weapon style's reach plus the native boss reach allowance. Native Tools.setUse still owns attack cadence, combos, and hit validation; no extra hit remote spam is introduced.
+
+Live compatibility tests on 6 November 2026: depth 5 Mother Geode HP 3887.87 to 0 within a six-second test (11 native Weapon hit events, 6 weak-point events); depth 10 Frostbound Mother HP 5821 to 0 within a six-second test (9 native Weapon hit events, 6 weak-point events). Those are local native hit-event counts plus observed server HP reduction, not individual server acknowledgments for every event. Irregular named boss shapes such as Warden/Scarab/Wyrm were inspected in the current client code and covered by target-planner tests; those shapes were not live-tested in this run.
+
+The delivered bundle compiles at optimization levels 0 and 2. Focused boss-target, Endless lifecycle, held-fire, and hub integration checks pass. Diagnostic exports include selected boss tool, name/skin, target kind, weak-point ID and reach. The live hub was not reloaded for publication; the short test controllers were removed and the original controller restored.
